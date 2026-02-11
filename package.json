@@ -1,0 +1,27 @@
+{
+  "name": "ofg-geartrack",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/sp/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "idp": "nodemon src/idp/index.js",
+    "sp": "node src/sp/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NoahSheppard/ofg-geartrack.git"
+  },
+  "author": "Noah Sheppard",
+  "license": "GPL-2.0-only",
+  "bugs": {
+    "url": "https://github.com/NoahSheppard/ofg-geartrack/issues"
+  },
+  "homepage": "https://github.com/NoahSheppard/ofg-geartrack#readme",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^4.22.1",
+    "express-session": "^1.19.0",
+    "saml-sso-helper": "^1.0.4"
+  }
+}
