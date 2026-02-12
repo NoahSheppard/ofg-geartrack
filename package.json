@@ -25,6 +25,8 @@
     "express-session": "^1.19.0",
     "passport": "^0.7.0",
     "passport-saml": "^3.2.4",
-    "saml-sso-helper": "^1.0.4"
+    "saml-sso-helper": "^1.0.4",
+    "xmldom": "^0.6.0",
+    "xpath": "^0.0.34"
   }
 }
