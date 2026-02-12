@@ -6,7 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "idp": "nodemon src/idp/index.js",
-    "sp": "node src/sp/index.js"
+    "sp": "nodemon src/sp/index.js"
   },
   "repository": {
     "type": "git",
@@ -20,8 +20,11 @@
   "homepage": "https://github.com/NoahSheppard/ofg-geartrack#readme",
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "body-parser": "^2.2.2",
     "express": "^4.22.1",
     "express-session": "^1.19.0",
+    "passport": "^0.7.0",
+    "passport-saml": "^3.2.4",
     "saml-sso-helper": "^1.0.4"
   }
 }
