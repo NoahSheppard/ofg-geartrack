@@ -1,83 +1,51 @@
-const express = require('express');
-const session = require('express-session');
-const bcrypt = require('bcryptjs');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const zlib = require('zlib');
-const xmlbuilder = require('xmlbuilder');
-const xmldom = require('xmldom');
-const xpath = require('xpath')
+import express, { urlencoded, json } from 'express';
+import session from 'express-session';
+import { hashSync, compare } from 'bcryptjs';
+import { join, dirname } from 'path';
+import { readFileSync } from 'fs';
+import { randomBytes } from 'crypto';
+import { inflateRawSync } from 'zlib';
+import { DOMParser } from 'xmldom';
+import { select } from 'xpath';
+import  * as dbU from '../idp/util/db.js';
+import * as userU from '../idp/util/user.js';
+import { fileURLToPath } from 'url';
+import bcrypt from 'bcrypt';
 
 const app = express();
 const PORT = process.env.IDP_PORT || 3000;
 const SP_PORT = process.env.SP_PORT || 3001;
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 const PROD = false;
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(urlencoded({ extended: true }));
+app.use(json());
 app.use(session({
     secret: 'secret-to-change-in-prod',
     resave: false,
     saveUninitialized: false, 
-    cookie: { secure: false } // FIXED: was 'cookies'
+    cookie: { secure: false }
 }));
 
-// replace with db instance later
-const users = [
-    {
-        id: 0, 
-        email: 'student1@ofgsstudents.com',
-        password: bcrypt.hashSync('password123', 10),
-        profile: {
-            displayName: 'Student One',
-            firstName: 'Student',
-            lastName: 'One',
-            userType: 'student',
-            role: ''
-        }
-    },
-    {
-        id: 1, 
-        email: 'admin@ofg.nsw.edu.au',
-        password: bcrypt.hashSync('password123', 10),
-        profile: {
-            displayName: 'Admin One',
-            firstName: 'Admin',
-            lastName: 'One',
-            userType: 'admin',
-            role: 'Systems Administrator'
-        }
-    },
-    {
-        id: 2, 
-        email: 'teacher1@ofg.nsw.edu.au',
-        password: bcrypt.hashSync('password123', 10),
-        profile: {
-            displayName: 'Teacher One',
-            firstName: 'Teacher',
-            lastName: 'One',
-            userType: 'teacher',
-            role: 'Music Teacher'
-        }
-    }
-]
+dbU.initialOperation();
 
 let idpSigningKey, idpSigningCert;
 try {
-    idpSigningKey = fs.readFileSync(path.join(__dirname, '../../certificates/idp-signing.key'), 'utf-8');
-    idpSigningCert = fs.readFileSync(path.join(__dirname, '../../certificates/idp-signing.cert'), 'utf-8');
+    idpSigningKey = readFileSync(join(__dirname, '../../certificates/idp-signing.key'), 'utf-8');
+    idpSigningCert = readFileSync(join(__dirname, '../../certificates/idp-signing.cert'), 'utf-8');
 } catch {
     console.error('Certificates not found, running without signing - WILL NOT WORK IN PROD');
 };
 
-const findUserByEmail = (email) => users.find(u => u.email === email);
-const authenticateUser = async (email, password) => {
-    const user = findUserByEmail(email);
+const findUserByUsername = (username) => userU.getUserByUsername(dbU.db, username);
+const authenticateUser = async (username, password) => {
+    const user = findUserByUsername(username);
     if (!user) return null;
 
-    const isValid = await bcrypt.compare(password, user.password);
+    const isValid = await userU.verifyPassword(dbU.db, username, password);
     return isValid ? user : null;
 };
 
@@ -85,9 +53,9 @@ function createSAMLResponse(user, inResponseTo, destination) {
     const issueInstant = new Date().toISOString();
     const notBefore = new Date(Date.now() - 5000).toISOString();
     const notOnOrAfter = new Date(Date.now() + 300000).toISOString();
-    const sessionIndex = '_'  + crypto.randomBytes(16).toString('hex');
-    const assertionID = '_' + crypto.randomBytes(16).toString('hex');
-    const responseID = '_' + crypto.randomBytes(16).toString('hex');
+    const sessionIndex = '_'  + randomBytes(16).toString('hex');
+    const assertionID = '_' + randomBytes(16).toString('hex');
+    const responseID = '_' + randomBytes(16).toString('hex');
 
     if (inResponseTo) {
         response.att('InResponseTo', inResponseTo);
@@ -109,8 +77,8 @@ function createSAMLResponse(user, inResponseTo, destination) {
 
     const subject = assertion.ele('saml:Subject');
     subject.ele('saml:NameID')
-        .att('Format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress')
-        .txt(user.email);
+        .att('Format', 'urn:oasis:names:tc:SAML:1.1:nameid-format:username')
+        .txt(user.username);
     
     const subjectConfirmation = subject.ele('saml:SubjectConfirmation')
         .att('Method', 'urn:oasis:names:tc:SAML:2.0:cm:bearer');
@@ -139,12 +107,13 @@ function createSAMLResponse(user, inResponseTo, destination) {
     const attributeStatement = assertion.ele('saml:AttributeStatement');
 
     const attributes = {
-        'email': user.email,
+        'username': user.username,
         'displayName': user.profile.displayName,
         'firstName': user.profile.firstName,
         'lastName': user.profile.lastName,
         'userType': user.profile.userType,
-        'role': user.profile.role
+        'role': user.profile.role,
+        'email': user.profile.email
     };
 
     Object.keys(attributes).forEach(attrName => {
@@ -177,7 +146,7 @@ app.get('/metadata', (req, res) => {
                 </X509Data>
             </KeyInfo>
         </KeyDescriptor>` : ''}
-        <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</NameIDFormat>
+        <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:username</NameIDFormat>
         <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="http://localhost:${PORT}/sso"/>
         <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="http://localhost:${PORT}/sso"/>
     </IDPSSODescriptor>
@@ -207,7 +176,7 @@ app.get('/login', (req, res) => {
                 <form method="POST" action="/login">
                     <input type="hidden" name"SAMLRequest" value="${SAMLRequest || ''}" />
                     <input type="hidden" name"RelayState" value="${RelayState || ''}" />
-                    <input type="email" name="email" placeholder="Email Address" required />
+                    <input type="username" name="username" placeholder="Username" required />
                     <input type="password" name="password" placeholder="Password" required />
                     <button type="submit">Sign in</button>
                 </form>
@@ -224,15 +193,15 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-    const {email, password, SAMLRequest, RelayState} = req.body;
+    const {username, password, SAMLRequest, RelayState} = req.body;
 
     try {
-        const user = await authenticateUser(email, password);
+        const user = await authenticateUser(username, password);
 
         if (!user) {
             return res.status(401).send(`
                 <h2>Login Failed</h2>
-                <p>Invalid email or password</p>
+                <p>Invalid username or password</p>
                 <a href="/login?SAMLRequest=${SAMLRequest || ''}&RelayState=${RelayState || ''}">Try Again</a>
             `);
         }
@@ -266,9 +235,9 @@ app.get('/sso', (req, res) => {
     if (req.query.SAMLRequest) {
         try {
             const decoded = Buffer.from(req.qurty.SAMLRequest, 'base64');
-            const inflated = zlib.inflateRawSync(decoded).toString();
-            const doc = new xmldom.DOMParser().parseFromString(inflated);
-            const idNode = xpath.select("//*[local-name()='AuthnRequest']/@ID", doc);
+            const inflated = inflateRawSync(decoded).toString();
+            const doc = new DOMParser().parseFromString(inflated);
+            const idNode = select("//*[local-name()='AuthnRequest']/@ID", doc);
             if (idNode && idNOde[0]) {
                 inResponseTo = idNode[0].value;
             }
@@ -305,7 +274,7 @@ app.get('/profile', (req, res) => {
     res.send(`
         <h2>User Profile</h2>
         <p><strong>Name:</strong> ${user.profile.displayName}</p>
-        <p><strong>Email:</strong> ${user.email} </p>
+        <p><strong>Username:</strong> ${user.username} </p>
         <p><strong>User Type:</strong> ${user.profile.userType} </p>
         <p><strong>Role:</strong> ${user.profile.role === '' ? "None (student)" : user.profile.role} </p>
         <a href="/logout">Log Out</a>
@@ -315,6 +284,67 @@ app.get('/profile', (req, res) => {
 app.get('/logout', (req, res) => {
     req.session.destroy();
     res.send(`<h2>Logged out successfully</h2><a href="/login">Login Again</a>`);
+});
+
+app.get('/adduser', (req, res) => {
+    if (!req.session.user) return res.redirect('/login');
+    const user = req.session.user;
+
+    if (user.profile.userType = "admin") {
+        res.send(`
+            <!DOCTYPE html>
+            <html>
+                <head>
+                    <title>GearTrack IdP Add User</title> 
+                    <style>
+                        body {font-family: Arial, sans-serif; max-width: 400px; margin: 100px auto; padding: 20px; }
+                        .login-form { background: #f5f5f5; padding: 30px; border-radius: 8px; }
+                        input {width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd}
+                        button { background: #007bff; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%; }
+                        button:hover { background: #0056b3}
+                    </style>
+                </head>
+                <body>
+                    <div class="login-form">
+                        <h2>Dev Login Portal</h2>
+                        <form method="POST" action="/adduser">
+                            <input name="firstName" placeholder="First Name" required />
+                            <input name="lastName" placeholder="Last Name" required />
+                            <input type="password" name="password" placeholder="Password" required />
+                            <input name="userType" placeholder="User Type" required />
+                            <input name="role" placeholder="Role" />
+                            <button type="submit">Add User</button>
+                        </form>
+                    </div>
+                </body>
+            <html>
+        `);
+    }
+});
+
+app.post('/adduser', async (req, res) => {
+    const {password, firstName, lastName, userType, role} = req.body;
+
+    const data = {
+        username: lastName.toLowerCase() + firstName[0].toLowerCase(),
+        password: password,
+        profile: {
+            firstName: firstName,
+            lastName: lastName, 
+            displayName: firstName + " " + lastName, 
+            userType: userType, 
+            role: role ? role : '',
+            email: lastName.toLowerCase() + firstName[0].toLowerCase() + role == "student" ? "@ofgsstudents.com" : "@ofg.nsw.edu.au"
+        }
+    }
+
+    try {
+        await userU.createUser(dbU.db, data); 
+        res.status(200).send(`<h2>Successfully added user: ${data.username}`);
+    } catch (error) {
+        console.error("AddUser error: ". error);
+        res.status(500).send(`Add User failed - Logs: \n${error}`)
+    }
 });
 
 app.get('/health', (req, res) => {

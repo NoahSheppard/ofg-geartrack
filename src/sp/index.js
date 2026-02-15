@@ -1,11 +1,14 @@
-const express = require('express');
-const passport = require('passport');
-const SamlStrategy = require('passport-saml').Strategy;
-const bodyParser = require('body-parser');
-const session = require('express-session');
+import express from 'express';
+import passport from 'passport';
+import { Strategy as SamlStrategy } from 'passport-saml';
+import bodyParser from 'body-parser';
+import session from 'express-session';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const fs = require('fs');
-const path = require('path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const spCert = fs.readFileSync(path.join(__dirname, '../../certificates/sp-signing.cert'), 'utf-8');
 const spKey = fs.readFileSync(path.join(__dirname, '../../certificates/sp-signing.key'), 'utf-8');
@@ -37,7 +40,7 @@ passport.use(
         entryPoint: entryPoint,
         issuer: 'geartrack-sp',
         cert: idpCert,  // IDP's certificate to verify signed responses
-        identifierFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+        identifierFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:username',
         wantAssertionsSigned: true,
         wantEncryptedAssertions: false,
         disableRequestedAuthnContext: true,
@@ -70,7 +73,7 @@ app.get('/sp/metadata', (req, res) => {
                 </X509Data>
             </KeyInfo>
         </KeyDescriptor>
-        <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</NameIDFormat>
+        <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:username</NameIDFormat>
         <AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="http://localhost:${PORT}/login/callback" index="0" isDefault="true"/>
     </SPSSODescriptor>
 </EntityDescriptor>`;

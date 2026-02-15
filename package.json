@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "main": "src/sp/index.js",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "idp": "nodemon src/idp/index.js",
@@ -19,13 +20,17 @@
   },
   "homepage": "https://github.com/NoahSheppard/ofg-geartrack#readme",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "body-parser": "^2.2.2",
     "express": "^4.22.1",
     "express-session": "^1.19.0",
+    "mysql": "^2.18.1",
     "passport": "^0.7.0",
     "passport-saml": "^3.2.4",
+    "pg": "^8.18.0",
     "saml-sso-helper": "^1.0.4",
+    "sqlite3": "^5.1.7",
     "xmldom": "^0.6.0",
     "xpath": "^0.0.34"
   }
