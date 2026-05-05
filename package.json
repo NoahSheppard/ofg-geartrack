@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "idp": "nodemon src/idp/index.js",
-    "sp": "nodemon src/sp/index.js"
+    "idp": "node src/idp/index.js",
+    "sp": "node src/sp/index.js"
   },
   "repository": {
     "type": "git",
@@ -24,6 +24,7 @@
     "bcryptjs": "^3.0.3",
     "body-parser": "^2.2.2",
     "express": "^4.22.1",
+    "express-react-views": "^0.11.0",
     "express-session": "^1.19.0",
     "mysql": "^2.18.1",
     "passport": "^0.7.0",
@@ -31,6 +32,7 @@
     "pg": "^8.18.0",
     "saml-sso-helper": "^1.0.4",
     "sqlite3": "^5.1.7",
+    "xmlbuilder2": "^4.0.3",
     "xmldom": "^0.6.0",
     "xpath": "^0.0.34"
   }

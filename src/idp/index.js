@@ -11,6 +11,9 @@ import  * as dbU from '../idp/util/db.js';
 import * as userU from '../idp/util/user.js';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
+import { createEngine } from 'express-react-views';
+import { create } from 'xmlbuilder2';
+import xmlCrypto from 'xml-crypto';
 
 const app = express();
 const PORT = process.env.IDP_PORT || 3000;
@@ -20,6 +23,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const PROD = false;
+
+// JSX Parsing
+app.set('views', __dirname + '/views');
+app.set('view engine', 'jsx');
+app.engine('jsx', createEngine());
 
 app.use(urlencoded({ extended: true }));
 app.use(json());
@@ -57,23 +65,32 @@ function createSAMLResponse(user, inResponseTo, destination) {
     const assertionID = '_' + randomBytes(16).toString('hex');
     const responseID = '_' + randomBytes(16).toString('hex');
 
+    const response = create({ version: '1.0', encoding: 'UTF-8' })
+        .ele('samlp:Response')
+        .att('xmlns:samlp', 'urn:oasis:names:tc:SAML:2.0:protocol')
+        .att('xmlns:saml', 'urn:oasis:names:tc:SAML:2.0:assertion')
+        .att('ID', responseID)
+        .att('Version', '2.0')
+        .att('IssueInstant', issueInstant)
+        .att('Destination', destination);
+
     if (inResponseTo) {
         response.att('InResponseTo', inResponseTo);
     }
 
-    response.ele('saml:Issuer', `http://localhost:${PORT}/metadata`);
+    response.ele('saml:Issuer').txt(`http://localhost:${PORT}/metadata`);
 
     response.ele('samlp:Status')   
         .ele('samlp:StatusCode')
         .att('Value', 'urn:oasis:names:tc:SAML:2.0:status:Success');
     
     const assertion = response.ele('saml:Assertion')
-        .att('smlns:saml', 'urn:oasis:names:tc:SAML:2.0:assertion')
+        .att('xmlns:saml', 'urn:oasis:names:tc:SAML:2.0:assertion')
         .att('ID', assertionID)
         .att('Version', '2.0')
         .att('IssueInstant', issueInstant)
     
-    assertion.ele('saml:Issuer', `http://localhost:${PORT}/metadata`);
+    assertion.ele('saml:Issuer').txt(`http://localhost:${PORT}/metadata`);
 
     const subject = assertion.ele('saml:Subject');
     subject.ele('saml:NameID')
@@ -88,7 +105,7 @@ function createSAMLResponse(user, inResponseTo, destination) {
         .att('Recipient', destination);
  
     if (inResponseTo) {
-        subjectConfirmation.ele('saml:JubjectConfirmationData').att('InResponseTo', inResponseTo);
+        subjectConfirmation.ele('saml:SubjectConfirmationData').att('InResponseTo', inResponseTo);
     }
 
     const conditions = assertion.ele('saml:Conditions')
@@ -96,13 +113,13 @@ function createSAMLResponse(user, inResponseTo, destination) {
         .att('NotOnOrAfter', notOnOrAfter);
     
     conditions.ele('saml:AudienceRestriction')
-        .ele('saml:Audience', 'geartrack-sp');
+        .ele('saml:Audience').txt('geartrack-sp');
 
     assertion.ele('saml:AuthnStatement')
         .att('AuthnInstant', issueInstant)
         .att('SessionIndex', sessionIndex)
         .ele('saml:AuthnContext')
-        .ele('saml:AuthnContextClassRef', 'urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport');
+        .ele('saml:AuthnContextClassRef').txt('urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport');
 
     const attributeStatement = assertion.ele('saml:AttributeStatement');
 
@@ -116,18 +133,72 @@ function createSAMLResponse(user, inResponseTo, destination) {
         'email': user.profile.email
     };
 
-    Object.keys(attributes).forEach(attrName => {
-        attributeStatement.ele('saml:Attribute')
-            .att('name', attrName)
-            .att('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
-            .ele('samlAttributeValue')
-            .att('xmlns:xs', 'http://www.w3.org/2001/XMLSchema')
-            .att('xmlns:xsi', 'http://www.w3.org/2001/SMLSchema-instance')
-            .att('xsi:type', 'xs:string')
-            .txt(attributes[attrName]);
-    })
+    Object.keys(attributes).forEach((attrName) => {
+        const value = attributes[attrName];
+        if (value === undefined || value === null) return;
 
-    return response.end({pretty: false});
+        attributeStatement.ele('saml:Attribute')
+            .att('Name', attrName)
+            .att('NameFormat', 'urn:oasis:names:tc:SAML:2.0:attrname-format:basic')
+            .ele('saml:AttributeValue')
+            .att('xmlns:xs', 'http://www.w3.org/2001/XMLSchema')
+            .att('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+            .att('xsi:type', 'xs:string')
+            .txt(String(value));
+    });
+
+    const unsignedXml = response.end({ pretty: false });
+
+    if (!idpSigningKey || !idpSigningCert) {
+        return unsignedXml;
+    }
+
+    const { SignedXml } = xmlCrypto;
+    const cleanCert = idpSigningCert
+        .replace(/-----BEGIN CERTIFICATE-----/, '')
+        .replace(/-----END CERTIFICATE-----/, '')
+        .replace(/\n/g, '')
+        .trim();
+
+    const signAtXPath = (xml, xpathToSign, insertAfterXPath) => {
+        const sig = new SignedXml();
+        sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+        sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
+        sig.addReference(
+            xpathToSign,
+            [
+                'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
+                'http://www.w3.org/2001/10/xml-exc-c14n#'
+            ],
+            'http://www.w3.org/2001/04/xmlenc#sha256'
+        );
+        sig.signingKey = idpSigningKey;
+        sig.keyInfoProvider = {
+            getKeyInfo: () => `<X509Data><X509Certificate>${cleanCert}</X509Certificate></X509Data>`,
+            getKey: () => null
+        };
+
+        sig.computeSignature(xml, {
+            location: {
+                reference: insertAfterXPath,
+                action: 'after'
+            }
+        });
+
+        return sig.getSignedXml();
+    };
+
+    const assertionSignedXml = signAtXPath(
+        unsignedXml,
+        "/*[local-name(.)='Response']/*[local-name(.)='Assertion']",
+        "/*[local-name(.)='Response']/*[local-name(.)='Assertion']/*[local-name(.)='Issuer']"
+    );
+
+    return signAtXPath(
+        assertionSignedXml,
+        "/*[local-name(.)='Response']",
+        "/*[local-name(.)='Response']/*[local-name(.)='Issuer']"
+    );
 }
 
 app.get('/metadata', (req, res) => {
@@ -174,8 +245,8 @@ app.get('/login', (req, res) => {
             <div class="login-form">
                 <h2>Dev Login Portal</h2>
                 <form method="POST" action="/login">
-                    <input type="hidden" name"SAMLRequest" value="${SAMLRequest || ''}" />
-                    <input type="hidden" name"RelayState" value="${RelayState || ''}" />
+                    <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
+                    <input type="hidden" name="RelayState" value="${RelayState || ''}" />
                     <input type="username" name="username" placeholder="Username" required />
                     <input type="password" name="password" placeholder="Password" required />
                     <button type="submit">Sign in</button>
@@ -188,7 +259,7 @@ app.get('/login', (req, res) => {
                 </div>
             </div>
         </body>
-    <html>
+    </html>
 `);
 });
 
@@ -210,14 +281,9 @@ app.post('/login', async (req, res) => {
         if (SAMLRequest) {
             return res.redirect(`/sso?SAMLRequest=${SAMLRequest}&RelayState=${RelayState || ''}`);
         }
-
-        res.send(`
-            <h2>Login Successful</h2>
-            <p>Welcome, ${user.profile.displayName}!</p>
-            <a href="/profile">View Profile</a>
-        `);
+        res.render('devProfile', {user: user});
     } catch (error) {
-        console.error("Login Error: ". error);
+        console.error("Login Error: ", error);
         res.status(500).send(`Login Failed - Logs: \n${error}`)
     }
 });
@@ -234,18 +300,27 @@ app.get('/sso', (req, res) => {
     let inResponseTo = null;
     if (req.query.SAMLRequest) {
         try {
-            const decoded = Buffer.from(req.qurty.SAMLRequest, 'base64');
-            const inflated = inflateRawSync(decoded).toString();
-            const doc = new DOMParser().parseFromString(inflated);
+            const samlRequestRaw = String(req.query.SAMLRequest).replace(/ /g, '+');
+            const decoded = Buffer.from(samlRequestRaw, 'base64');
+
+            // SPs may send Redirect binding requests either compressed (DEFLATE) or plain XML.
+            let authnRequestXml;
+            try {
+                authnRequestXml = inflateRawSync(decoded).toString();
+            } catch {
+                authnRequestXml = decoded.toString();
+            }
+
+            const doc = new DOMParser().parseFromString(authnRequestXml);
             const idNode = select("//*[local-name()='AuthnRequest']/@ID", doc);
-            if (idNode && idNOde[0]) {
+            if (idNode && idNode[0]) {
                 inResponseTo = idNode[0].value;
             }
         } catch (error) {
             console.warn('Could not parse SAMLRequest: ', error.message);
         }
     }
-
+    
     const samlResponse = createSAMLResponse(user, inResponseTo, destination);
     const samlResponseBase64 = Buffer.from(samlResponse).toString('base64');
 
@@ -274,6 +349,7 @@ app.get('/profile', (req, res) => {
     res.send(`
         <h2>User Profile</h2>
         <p><strong>Name:</strong> ${user.profile.displayName}</p>
+        <p><strong>Email:</strong> ${user.profile.email}</p>
         <p><strong>Username:</strong> ${user.username} </p>
         <p><strong>User Type:</strong> ${user.profile.userType} </p>
         <p><strong>Role:</strong> ${user.profile.role === '' ? "None (student)" : user.profile.role} </p>
@@ -290,7 +366,7 @@ app.get('/adduser', (req, res) => {
     if (!req.session.user) return res.redirect('/login');
     const user = req.session.user;
 
-    if (user.profile.userType = "admin") {
+    if (user.profile.userType === "admin") {
         res.send(`
             <!DOCTYPE html>
             <html>

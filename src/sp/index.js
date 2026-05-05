@@ -6,6 +6,7 @@ import session from 'express-session';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createEngine } from 'express-react-views';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,11 @@ const entryPoint = 'http://localhost:3000/sso'
 
 const app = express(); 
 const PORT = 3001;
+
+// JSX Parsing
+app.set('views', __dirname + '/views');
+app.set('view engine', 'jsx');
+app.engine('jsx', createEngine());
 
 // Middleware
 app.use(bodyParser.urlencoded({extended: false}));
@@ -41,6 +47,7 @@ passport.use(
         issuer: 'geartrack-sp',
         cert: idpCert,  // IDP's certificate to verify signed responses
         identifierFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:username',
+        wantAuthnResponseSigned: true,
         wantAssertionsSigned: true,
         wantEncryptedAssertions: false,
         disableRequestedAuthnContext: true,
@@ -48,8 +55,21 @@ passport.use(
         disableRequestCompression: true
     },
     (profile, done) => {
-        console.log('SAML Profile:', profile);
-        return done(null, profile);
+        const attributes = profile?.attributes || {};
+        const normalized = {
+            ...profile,
+            attributes,
+            email: profile?.email || attributes.email,
+            displayName: profile?.displayName || attributes.displayName,
+            givenName: profile?.givenName || attributes.givenName || attributes.firstName,
+            surname: profile?.surname || attributes.surname || attributes.lastName,
+            uid: profile?.uid || attributes.uid || attributes.username,
+            role: profile?.role || attributes.role,
+            userType: profile?.userType || attributes.userType
+        };
+
+        console.log('SAML Profile:', normalized);
+        return done(null, normalized);
     }
 ));
 
@@ -103,7 +123,8 @@ app.post('/login/callback', (req, res, next) => {
 
 app.get('/dashboard', (req, res) => {
     if (req.isAuthenticated()) {
-        res.send(`<h1>Welcome, ${req.user.displayName || req.user.name || 'User'}</h1>`);
+        //res.send(`<h1>Welcome, ${req.user.displayName || req.user.name || 'User'}</h1>`);
+        res.render('dashboard', { user: req.user} );
     } else {
         res.redirect('/login');
     }
