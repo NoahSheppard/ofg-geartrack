@@ -1,25 +1,29 @@
 import * as dbU from './db.js';
-import bcrypt from 'bcrypt';
 
 async function createUser(db, data) {
     await dbU.run(db, 'BEGIN');
     console.log(`Adding usr: ${JSON.stringify(data)}`)
 
     try {
-        await dbU.run(
+        const createdAt = data.created_at ?? new Date();
+        const lastLogin = createdAt;
+        const role = data.role && data.role.trim() ? data.role : 'student';
+
+        const userResult = await dbU.run(
             db,
             `INSERT INTO users
-            (user_id, email, display_name, role, created_at, last_login)
-            VALUES (?, ?, ?, ?, ?, ?)`,
+            (email, display_name, role, created_at, last_login)
+            VALUES (?, ?, ?, ?, ?)`,
             [
-                // FIX: autoincrement
                 data.email,
                 data.display_name,
-                data.role,
-                data.created_at, // FIX: Make this a timestamp
-                data.last_login 
+                role,
+                createdAt,
+                lastLogin
             ]
         );
+
+        const userId = userResult.lastID;
 
         await dbU.run(db, `COMMIT`);
         return userId;
