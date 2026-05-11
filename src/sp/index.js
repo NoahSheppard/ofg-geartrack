@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createEngine } from 'express-react-views';
+import { db, execute, initialOperation, run, get, all } from './util/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +22,9 @@ const entryPoint = 'http://localhost:3000/sso'
 const app = express(); 
 const PORT = 3001;
 
+// Databasing 
+initialOperation();
+
 // JSX Parsing
 app.set('views', __dirname + '/views');
 app.set('view engine', 'jsx');
@@ -30,7 +34,7 @@ app.engine('jsx', createEngine());
 app.use(bodyParser.urlencoded({extended: false}));
 app.use(bodyParser.json());
 app.use(session({
-    secret: 'sp-secret-key',
+    secret: 'sp-secret-key', // for the love of god change this in prod 
     resave: false,
     saveUninitialized: false,
     cookie: { secure: false, httpOnly: true } 
@@ -49,7 +53,7 @@ passport.use(
         identifierFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:username',
         wantAuthnResponseSigned: true,
         wantAssertionsSigned: true,
-        wantEncryptedAssertions: false,
+        wantEncryptedAssertions: true,
         disableRequestedAuthnContext: true,
         acceptedClockSkewMs: 5000,
         disableRequestCompression: true
@@ -116,15 +120,19 @@ app.post('/login/callback', (req, res, next) => {
         }
         req.logIn(user, (err) => {
             if (err) return next(err);
-            res.redirect('/dashboard');
+            res.redirect('/');
         });
     })(req, res, next);
 });
 
-app.get('/dashboard', (req, res) => {
+app.get('/', (req, res) => {
     if (req.isAuthenticated()) {
-        //res.send(`<h1>Welcome, ${req.user.displayName || req.user.name || 'User'}</h1>`);
+        // This is the point in which rendering occurs for authenticated users 
+        let email = req.email;
+        let role = req.role;
+        let displayName = req.displayName;
         res.render('dashboard', { user: req.user} );
+        // code beyond this point will not execute
     } else {
         res.redirect('/login');
     }
