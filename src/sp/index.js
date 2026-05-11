@@ -7,7 +7,20 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createEngine } from 'express-react-views';
-import { db, execute, initialOperation, run, get, all } from './util/db.js';
+import { 
+    db, 
+    execute, 
+    initialOperation, 
+    run, 
+    get, 
+    all 
+} from './util/db.js';
+import { 
+    createUser,
+    deleteUserById,
+    deleteUserByEmail,
+    getUserByEmail 
+} from './util/user.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -128,9 +141,29 @@ app.post('/login/callback', (req, res, next) => {
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) {
         // This is the point in which rendering occurs for authenticated users 
-        let email = req.email;
-        let role = req.role;
-        let displayName = req.displayName;
+        //console.log(`Req: ${req.body}`);
+        let username = req.user.username;
+        let email = req.user.email;
+        let role = req.user.role;
+        let displayName = req.user.displayName;
+        getUserByEmail(db, email).then(user => {
+            if (!user) {
+                console.log(`User with email ${email} not found in DB, creating new user.`);
+                return createUser(db, {
+                    email: username + email,
+                    display_name: displayName,
+                    role
+                });
+            } else {
+                console.log(`User with email ${email} found in DB.`);
+                return user.user_id;
+            }
+        }).then(userId => {
+            console.log(`Authenticated user ID: ${userId}`);
+        }).catch(err => {
+            console.error('Error handling user after authentication:', err);
+        });
+
         res.render('dashboard', { user: req.user} );
         // code beyond this point will not execute
     } else {
