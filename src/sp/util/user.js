@@ -33,6 +33,14 @@ async function createUser(db, data) {
     }
 }
 
+async function updateUserLastLogin(db, user_id) {
+    return dbU.run(
+        db,
+        `UPDATE users SET last_login = ? WHERE user_id = ?`,
+        [new Date(), user_id]
+     );
+}
+
 async function deleteUserById(db, user_id) {
     return dbU.run(db, `DELETE FROM users WHERE user_id = ?`, [user_id]);
 }
@@ -64,6 +72,7 @@ async function getUserByEmail(db, email) {
 
 export {
     createUser,
+    updateUserLastLogin,
     deleteUserById,
     deleteUserByEmail,
     getUserByEmail
