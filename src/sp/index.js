@@ -17,6 +17,7 @@ import {
 } from './util/db.js';
 import { 
     createUser,
+    updateUserLastLogin,
     deleteUserById,
     deleteUserByEmail,
     getUserByEmail 
@@ -34,6 +35,8 @@ const entryPoint = 'http://localhost:3000/sso'
 
 const app = express(); 
 const PORT = 3001;
+
+const DEBUG = true; 
 
 // Databasing 
 initialOperation();
@@ -85,7 +88,7 @@ passport.use(
             userType: profile?.userType || attributes.userType
         };
 
-        console.log('SAML Profile:', normalized);
+        if (DEBUG) console.log('SAML Profile:', normalized);
         return done(null, normalized);
     }
 ));
@@ -140,28 +143,28 @@ app.post('/login/callback', (req, res, next) => {
 
 app.get('/', (req, res) => {
     if (req.isAuthenticated()) {
-        // This is the point in which rendering occurs for authenticated users 
-        //console.log(`Req: ${req.body}`);
         let username = req.user.username;
-        let email = req.user.email;
+        let email = username + req.user.email;
         let role = req.user.role;
         let displayName = req.user.displayName;
         getUserByEmail(db, email).then(user => {
             if (!user) {
-                console.log(`User with email ${email} not found in DB, creating new user.`);
+                if (DEBUG) console.log(`User with email ${email} not found in DB, creating new user.`);
                 return createUser(db, {
-                    email: username + email,
+                    email: email,
                     display_name: displayName,
                     role
                 });
             } else {
-                console.log(`User with email ${email} found in DB.`);
+                if (DEBUG) console.log(`User with email ${email} found in DB.`);
                 return user.user_id;
             }
         }).then(userId => {
-            console.log(`Authenticated user ID: ${userId}`);
+            if (DEBUG) console.log(`Authenticated user ID: ${userId}`);
+            return updateUserLastLogin(db, userId);
         }).catch(err => {
             console.error('Error handling user after authentication:', err);
+            res.send(`<h1>Error</h1><pre>${err}</pre>`);
         });
 
         res.render('dashboard', { user: req.user} );
