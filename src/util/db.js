@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const dbPath = join(__dirname, '../../../db/sp.db');
+const dbPath = join(__dirname, '../../db/sp.db');
 const db = new Database(dbPath);
 
 const execute = async (db, sql) => {

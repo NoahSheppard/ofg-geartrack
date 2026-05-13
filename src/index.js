@@ -26,11 +26,11 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const spCert = fs.readFileSync(path.join(__dirname, '../../certificates/sp-signing.cert'), 'utf-8');
-const spKey = fs.readFileSync(path.join(__dirname, '../../certificates/sp-signing.key'), 'utf-8');
-const spEncryptCert = fs.readFileSync(path.join(__dirname, '../../certificates/sp-encrypt.cert'), 'utf-8');
-const spEncryptKey = fs.readFileSync(path.join(__dirname, '../../certificates/sp-encrypt.key'), 'utf-8');
-const idpCert = fs.readFileSync(path.join(__dirname, '../../certificates/idp-signing.cert'), 'utf-8');
+const spCert = fs.readFileSync(path.join(__dirname, '../certificates/sp-signing.cert'), 'utf-8');
+const spKey = fs.readFileSync(path.join(__dirname, '../certificates/sp-signing.key'), 'utf-8');
+const spEncryptCert = fs.readFileSync(path.join(__dirname, '../certificates/sp-encrypt.cert'), 'utf-8');
+const spEncryptKey = fs.readFileSync(path.join(__dirname, '../certificates/sp-encrypt.key'), 'utf-8');
+const idpCert = fs.readFileSync(path.join(__dirname, '../certificates/idp-signing.cert'), 'utf-8');
 const entryPoint = 'http://localhost:3000/sso'
 
 const app = express(); 
