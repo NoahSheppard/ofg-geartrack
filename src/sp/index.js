@@ -6,6 +6,22 @@ import session from 'express-session';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createEngine } from 'express-react-views';
+import { 
+    db, 
+    execute, 
+    initialOperation, 
+    run, 
+    get, 
+    all 
+} from './util/db.js';
+import { 
+    createUser,
+    updateUserLastLogin,
+    deleteUserById,
+    deleteUserByEmail,
+    getUserByEmail 
+} from './util/user.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,11 +36,21 @@ const entryPoint = 'http://localhost:3000/sso'
 const app = express(); 
 const PORT = 3001;
 
+const DEBUG = true; 
+
+// Databasing 
+initialOperation();
+
+// JSX Parsing
+app.set('views', __dirname + '/views');
+app.set('view engine', 'jsx');
+app.engine('jsx', createEngine());
+
 // Middleware
 app.use(bodyParser.urlencoded({extended: false}));
 app.use(bodyParser.json());
 app.use(session({
-    secret: 'sp-secret-key',
+    secret: 'sp-secret-key', // for the love of god change this in prod 
     resave: false,
     saveUninitialized: false,
     cookie: { secure: false, httpOnly: true } 
@@ -41,15 +67,29 @@ passport.use(
         issuer: 'geartrack-sp',
         cert: idpCert,  // IDP's certificate to verify signed responses
         identifierFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:username',
+        wantAuthnResponseSigned: true,
         wantAssertionsSigned: true,
-        wantEncryptedAssertions: false,
+        wantEncryptedAssertions: true,
         disableRequestedAuthnContext: true,
         acceptedClockSkewMs: 5000,
         disableRequestCompression: true
     },
     (profile, done) => {
-        console.log('SAML Profile:', profile);
-        return done(null, profile);
+        const attributes = profile?.attributes || {};
+        const normalized = {
+            ...profile,
+            attributes,
+            email: profile?.email || attributes.email,
+            displayName: profile?.displayName || attributes.displayName,
+            givenName: profile?.givenName || attributes.givenName || attributes.firstName,
+            surname: profile?.surname || attributes.surname || attributes.lastName,
+            uid: profile?.uid || attributes.uid || attributes.username,
+            role: profile?.role || attributes.role,
+            userType: profile?.userType || attributes.userType
+        };
+
+        if (DEBUG) console.log('SAML Profile:', normalized);
+        return done(null, normalized);
     }
 ));
 
@@ -96,14 +136,39 @@ app.post('/login/callback', (req, res, next) => {
         }
         req.logIn(user, (err) => {
             if (err) return next(err);
-            res.redirect('/dashboard');
+            res.redirect('/');
         });
     })(req, res, next);
 });
 
-app.get('/dashboard', (req, res) => {
+app.get('/', (req, res) => {
     if (req.isAuthenticated()) {
-        res.send(`<h1>Welcome, ${req.user.displayName || req.user.name || 'User'}</h1>`);
+        let username = req.user.username;
+        let email = username + req.user.email;
+        let role = req.user.role;
+        let displayName = req.user.displayName;
+        getUserByEmail(db, email).then(user => {
+            if (!user) {
+                if (DEBUG) console.log(`User with email ${email} not found in DB, creating new user.`);
+                return createUser(db, {
+                    email: email,
+                    display_name: displayName,
+                    role
+                });
+            } else {
+                if (DEBUG) console.log(`User with email ${email} found in DB.`);
+                return user.user_id;
+            }
+        }).then(userId => {
+            if (DEBUG) console.log(`Authenticated user ID: ${userId}`);
+            return updateUserLastLogin(db, userId);
+        }).catch(err => {
+            console.error('Error handling user after authentication:', err);
+            res.send(`<h1>Error</h1><pre>${err}</pre>`);
+        });
+
+        res.render('dashboard', { user: req.user} );
+        // code beyond this point will not execute
     } else {
         res.redirect('/login');
     }
