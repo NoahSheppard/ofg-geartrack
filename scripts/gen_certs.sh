@@ -1,5 +1,7 @@
 #!/bin/bash
 
+mkdir -p certificates # dont forget this you goose
+
 # IDP Signing Certificate
 openssl req -x509 -newkey rsa:2048 -keyout certificates/idp-signing.key -out certificates/idp-signing.cert -days 365 -nodes -subj "/CN=geartrack-idp-signing"
 
