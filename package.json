@@ -34,6 +34,7 @@
     "saml-sso-helper": "^1.0.4",
     "sqlite3": "^6.0.1",
     "xmlbuilder2": "^4.0.3",
+    "xml-crypto": "^6.0.0",
     "xmldom": "^0.6.0",
     "xpath": "^0.0.34"
   }
