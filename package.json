@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "idp": "nodemon ofg-geartrack-idp/index.js",
-    "sp": "nodemon src/index.js"
+    "idp": "node ofg-geartrack-idp/index.js",
+    "sp": "node src/index.js"
   },
   "repository": {
     "type": "git",
