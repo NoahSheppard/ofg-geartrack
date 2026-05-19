@@ -7,7 +7,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "idp": "nodemon ofg-geartrack-idp/index.js",
-    "sp": "nodemon src/sp/index.js"
+    "sp": "nodemon src/index.js"
   },
   "repository": {
     "type": "git",
