@@ -1,0 +1,3 @@
+[submodule "ofg-geartrack-idp"]
+	path = ofg-geartrack-idp
+	url = https://github.com/noahsheppard/ofg-geartrack-idp
