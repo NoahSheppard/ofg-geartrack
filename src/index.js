@@ -76,14 +76,22 @@ passport.use(
     },
     (profile, done) => {
         const attributes = profile?.attributes || {};
+        const username = attributes.username || profile?.nameID || profile?.uid;
+        const email = profile?.email || attributes.email;
+        const displayName =
+            profile?.displayName ||
+            attributes.displayName ||
+            [attributes.firstName, attributes.lastName].filter(Boolean).join(' ');
+
         const normalized = {
             ...profile,
             attributes,
-            email: profile?.email || attributes.email,
-            displayName: profile?.displayName || attributes.displayName,
+            username,
+            email,
+            displayName,
             givenName: profile?.givenName || attributes.givenName || attributes.firstName,
             surname: profile?.surname || attributes.surname || attributes.lastName,
-            uid: profile?.uid || attributes.uid || attributes.username,
+            uid: profile?.uid || attributes.uid || username,
             role: profile?.role || attributes.role,
             userType: profile?.userType || attributes.userType
         };
@@ -141,36 +149,37 @@ app.post('/login/callback', (req, res, next) => {
     })(req, res, next);
 });
 
-app.get('/', (req, res) => {
-    if (req.isAuthenticated()) {
-        let username = req.user.username;
-        let email = username + req.user.email;
-        let role = req.user.role;
-        let displayName = req.user.displayName;
-        getUserByEmail(db, email).then(user => {
-            if (!user) {
-                if (DEBUG) console.log(`User with email ${email} not found in DB, creating new user.`);
-                return createUser(db, {
-                    email: email,
-                    display_name: displayName,
-                    role
-                });
-            } else {
-                if (DEBUG) console.log(`User with email ${email} found in DB.`);
-                return user.user_id;
-            }
-        }).then(userId => {
-            if (DEBUG) console.log(`Authenticated user ID: ${userId}`);
-            return updateUserLastLogin(db, userId);
-        }).catch(err => {
-            console.error('Error handling user after authentication:', err);
-            res.send(`<h1>Error</h1><pre>${err}</pre>`);
-        });
+app.get('/', async (req, res) => {
+    if (!req.isAuthenticated()) {
+        return res.redirect('/login');
+    }
 
-        res.render('dashboard', { user: req.user} );
-        // code beyond this point will not execute
-    } else {
-        res.redirect('/login');
+    const username = req.user?.username || req.user?.uid || req.user?.nameID;
+    const email = req.user?.email;
+    const role = req.user?.role || 'student';
+    const displayName = req.user?.displayName || username || 'User';
+
+    if (!email) {
+        console.error('SAML profile missing email attribute.');
+        return res.status(500).send('<h1>SAML Error</h1><pre>Missing email attribute in SAML profile.</pre>');
+    }
+
+    try {
+        const user = await getUserByEmail(db, email);
+        const userId = user
+            ? user.user_id
+            : await createUser(db, {
+                email,
+                display_name: displayName,
+                role
+            });
+
+        if (DEBUG) console.log(`Authenticated user ID: ${userId}`);
+        await updateUserLastLogin(db, userId);
+        return res.render('dashboard', { user: req.user });
+    } catch (err) {
+        console.error('Error handling user after authentication:', err);
+        return res.status(500).send(`<h1>Error</h1><pre>${err}</pre>`);
     }
 });
 
