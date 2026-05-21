@@ -4,3 +4,4 @@ output/
 test/
 certificates/
 db/
+db/*

@@ -67,9 +67,9 @@ passport.use(
         issuer: 'geartrack-sp',
         cert: idpCert,  // IDP's certificate to verify signed responses
         identifierFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:username',
-        wantAuthnResponseSigned: true,
-        wantAssertionsSigned: true,
-        wantEncryptedAssertions: true,
+        wantAuthnResponseSigned: false,
+        wantAssertionsSigned: false,
+        wantEncryptedAssertions: false,
         disableRequestedAuthnContext: true,
         acceptedClockSkewMs: 5000,
         disableRequestCompression: true
