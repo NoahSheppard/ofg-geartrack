@@ -10,7 +10,8 @@
     "sp": "node src/index.js",
     "seed": "node scripts/seed.js",
     "dev": "bash scripts/dev.sh",
-    "prod": "bash scripts/prod.sh"
+    "prod": "bash scripts/prod.sh",
+    "kill-ports": "bash scripts/kill-ports.sh"
   },
   "repository": {
     "type": "git",
