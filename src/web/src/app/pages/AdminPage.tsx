@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Search, Package, Clock, AlertTriangle, CheckCircle, XCircle, X, ListChecks, PlusCircle, Upload } from "lucide-react";
-import type { AdminStats, Gear, Category, PendingRental, ActiveRental } from "../types";
+import { Search, Package, Clock, AlertTriangle, CheckCircle, XCircle, X, ListChecks, PlusCircle, Upload, Users } from "lucide-react";
+import type {
+  AdminStats,
+  Gear,
+  Category,
+  PendingRental,
+  ActiveRental,
+  ClassListItem,
+  ClassSummary,
+  ClassDetail,
+  UserSearchResult,
+} from "../types";
+import { useCurrentUser } from "../hooks/useCurrentUser";
 
 // ─── Modal shell ─────────────────────────────────────────────────────────────
 
@@ -623,13 +634,319 @@ function GearEditModal({
   );
 }
 
+// ─── User search picker (for adding teachers/students to a class) ──────────
+
+function UserSearchPicker({
+  onSelect,
+  excludeIds,
+}: {
+  onSelect: (user: UserSearchResult) => void;
+  excludeIds: number[];
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<UserSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setResults([]);
+      return;
+    }
+
+    setSearching(true);
+    const handle = setTimeout(() => {
+      fetch(`/api/admin/users?search=${encodeURIComponent(trimmed)}`, { credentials: "include" })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
+        .then((users: UserSearchResult[]) => setResults(users.filter((u) => !excludeIds.includes(u.id))))
+        .catch(() => setResults([]))
+        .finally(() => setSearching(false));
+    }, 250);
+
+    return () => clearTimeout(handle);
+  }, [query, excludeIds]);
+
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search by name or email…"
+        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+      />
+      {query.trim() && (searching || results.length > 0) && (
+        <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {searching && <div className="px-3 py-2 text-xs text-gray-400">Searching…</div>}
+          {results.map((u) => (
+            <button
+              key={u.id}
+              type="button"
+              onClick={() => {
+                onSelect(u);
+                setQuery("");
+                setResults([]);
+              }}
+              className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+            >
+              <p className="text-gray-900">{u.displayName}</p>
+              <p className="text-xs text-gray-400">{u.email} · {u.role}</p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Class detail modal ──────────────────────────────────────────────────────
+
+function ClassDetailModal({
+  classId,
+  isAdmin,
+  onClose,
+  onChanged,
+}: {
+  classId: number;
+  isAdmin: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [detail, setDetail] = useState<ClassDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = () => {
+    fetch(`/api/admin/classes/${classId}`, { credentials: "include" })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(setDetail)
+      .catch(() => toast.error("Failed to load class"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classId]);
+
+  const addMember = async (kind: "teachers" | "students", user: UserSearchResult) => {
+    const res = await fetch(`/api/admin/classes/${classId}/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ userId: user.id }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      toast.error(body.error ?? "Failed to add");
+      return;
+    }
+    refresh();
+    onChanged();
+  };
+
+  const removeMember = async (kind: "teachers" | "students", userId: number) => {
+    const res = await fetch(`/api/admin/classes/${classId}/${kind}/${userId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      toast.error(body.error ?? "Failed to remove");
+      return;
+    }
+    refresh();
+    onChanged();
+  };
+
+  return (
+    <Modal onClose={onClose} widthClass="max-w-2xl">
+      <div className="flex items-start justify-between p-5 border-b border-gray-100">
+        <div>
+          <h2 className="text-gray-900">{detail?.name ?? "Class"}</h2>
+          {detail?.description && <p className="text-sm text-gray-400 mt-0.5">{detail.description}</p>}
+        </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+      <div className="p-5 space-y-5 overflow-y-auto">
+        {loading || !detail ? (
+          <p className="text-sm text-gray-400">Loading…</p>
+        ) : (
+          <>
+            <section>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Teachers</h3>
+              <div className="space-y-1">
+                {detail.teachers.map((t) => (
+                  <div key={t.id} className="flex items-center justify-between px-3 py-1.5 bg-gray-50 rounded-lg">
+                    <div>
+                      <p className="text-sm text-gray-900">{t.displayName}</p>
+                      <p className="text-xs text-gray-400">{t.email}</p>
+                    </div>
+                    {isAdmin && (
+                      <button onClick={() => removeMember("teachers", t.id)} className="text-gray-400 hover:text-red-500 transition-colors">
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {detail.teachers.length === 0 && <p className="text-xs text-gray-400">No teachers assigned.</p>}
+              </div>
+              {isAdmin && (
+                <div className="mt-2">
+                  <UserSearchPicker onSelect={(u) => addMember("teachers", u)} excludeIds={detail.teachers.map((t) => t.id)} />
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Students</h3>
+              <div className="space-y-1">
+                {detail.students.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between px-3 py-1.5 bg-gray-50 rounded-lg">
+                    <div>
+                      <p className="text-sm text-gray-900">{s.displayName}</p>
+                      <p className="text-xs text-gray-400">{s.email}</p>
+                    </div>
+                    {isAdmin && (
+                      <button onClick={() => removeMember("students", s.id)} className="text-gray-400 hover:text-red-500 transition-colors">
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {detail.students.length === 0 && <p className="text-xs text-gray-400">No students enrolled.</p>}
+              </div>
+              {isAdmin && (
+                <div className="mt-2">
+                  <UserSearchPicker onSelect={(u) => addMember("students", u)} excludeIds={detail.students.map((s) => s.id)} />
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Recent Rentals</h3>
+              <div className="space-y-1">
+                {detail.rentals.map((r) => (
+                  <div key={r.id} className="flex items-center justify-between px-3 py-1.5 bg-gray-50 rounded-lg text-sm">
+                    <span className="text-gray-800">{r.quantity} × {r.gearName}</span>
+                    <span className="text-gray-400">{r.studentName}</span>
+                    <span className="text-xs text-gray-400 capitalize">{r.status}</span>
+                  </div>
+                ))}
+                {detail.rentals.length === 0 && <p className="text-xs text-gray-400">No rentals yet.</p>}
+              </div>
+            </section>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Create class modal ─────────────────────────────────────────────────────
+
+function CreateClassModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const trimmed = name.trim();
+    if (!trimmed) {
+      toast.error("Class name is required");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/admin/classes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name: trimmed, description: description.trim() || undefined }),
+      });
+      const body = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        toast.error(body.error ?? "Failed to create class");
+        return;
+      }
+
+      toast.success(`Created "${trimmed}"`);
+      onCreated();
+      onClose();
+    } catch {
+      toast.error("Failed to create class");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal onClose={onClose}>
+      <div className="flex items-start justify-between p-5 border-b border-gray-100">
+        <h2 className="text-gray-900">Create Class</h2>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+      <form onSubmit={handleSubmit} className="p-5 space-y-3">
+        <div>
+          <label className="text-xs font-medium text-gray-600">Name *</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Year 11 Media Studies"
+            className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-600">Description (optional)</label>
+          <textarea
+            rows={2}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={submitting}
+          className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+        >
+          {submitting ? "Creating…" : "Create Class"}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-const TABS = [
-  { id: "pending" as const, label: "Pending Requests", icon: Clock },
-  { id: "active" as const, label: "Active Rentals", icon: Package },
-  { id: "gear" as const, label: "Gear Inventory", icon: ListChecks },
-  { id: "add" as const, label: "Add Gear", icon: PlusCircle },
+type TabId = "pending" | "active" | "classes" | "gear" | "add";
+
+const ADMIN_TABS: { id: TabId; label: string; icon: typeof Clock }[] = [
+  { id: "pending", label: "Pending Requests", icon: Clock },
+  { id: "active", label: "Active Rentals", icon: Package },
+  { id: "classes", label: "Classes", icon: Users },
+  { id: "gear", label: "Gear Inventory", icon: ListChecks },
+  { id: "add", label: "Add Gear", icon: PlusCircle },
+];
+
+const TEACHER_TABS: { id: TabId; label: string; icon: typeof Clock }[] = [
+  { id: "pending", label: "Pending Requests", icon: Clock },
+  { id: "active", label: "Active Rentals", icon: Package },
+  { id: "classes", label: "My Classes", icon: Users },
 ];
 
 function formatDate(dateStr: string) {
@@ -637,7 +954,12 @@ function formatDate(dateStr: string) {
 }
 
 export function AdminPage() {
-  const [activeTab, setActiveTab] = useState<"pending" | "active" | "gear" | "add">("pending");
+  const currentUser = useCurrentUser();
+  const role = currentUser.status === "ok" ? currentUser.user.role : undefined;
+  const isAdmin = role === "admin";
+  const isTeacher = role === "teacher";
+
+  const [activeTab, setActiveTab] = useState<TabId>("pending");
   const [search, setSearch] = useState("");
 
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -645,31 +967,53 @@ export function AdminPage() {
   const [active, setActive] = useState<ActiveRental[]>([]);
   const [gear, setGear] = useState<Gear[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [classes, setClasses] = useState<ClassListItem[]>([]);
+  const [myClasses, setMyClasses] = useState<ClassSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [rejectTarget, setRejectTarget] = useState<PendingRental | null>(null);
   const [editTarget, setEditTarget] = useState<Gear | null>(null);
+  const [classDetailId, setClassDetailId] = useState<number | null>(null);
+  const [showCreateClass, setShowCreateClass] = useState(false);
 
   const refreshAll = async () => {
     try {
-      const [statsRes, pendingRes, activeRes, gearRes, categoriesRes] = await Promise.all([
-        fetch("/api/admin/stats", { credentials: "include" }),
-        fetch("/api/admin/rentals/pending", { credentials: "include" }),
-        fetch("/api/admin/rentals/active", { credentials: "include" }),
-        fetch("/api/admin/gear", { credentials: "include" }),
-        fetch("/api/admin/categories", { credentials: "include" }),
-      ]);
+      if (isAdmin) {
+        const [statsRes, pendingRes, activeRes, gearRes, categoriesRes, classesRes] = await Promise.all([
+          fetch("/api/admin/stats", { credentials: "include" }),
+          fetch("/api/admin/rentals/pending", { credentials: "include" }),
+          fetch("/api/admin/rentals/active", { credentials: "include" }),
+          fetch("/api/admin/gear", { credentials: "include" }),
+          fetch("/api/admin/categories", { credentials: "include" }),
+          fetch("/api/admin/classes", { credentials: "include" }),
+        ]);
 
-      if (!statsRes.ok || !pendingRes.ok || !activeRes.ok || !gearRes.ok || !categoriesRes.ok) {
-        throw new Error("Failed to load admin data");
+        if (!statsRes.ok || !pendingRes.ok || !activeRes.ok || !gearRes.ok || !categoriesRes.ok || !classesRes.ok) {
+          throw new Error("Failed to load admin data");
+        }
+
+        setStats(await statsRes.json());
+        setPending(await pendingRes.json());
+        setActive(await activeRes.json());
+        setGear(await gearRes.json());
+        setCategories(await categoriesRes.json());
+        setClasses(await classesRes.json());
+      } else {
+        const [pendingRes, activeRes, myClassesRes] = await Promise.all([
+          fetch("/api/admin/rentals/pending", { credentials: "include" }),
+          fetch("/api/admin/rentals/active", { credentials: "include" }),
+          fetch("/api/classes/me", { credentials: "include" }),
+        ]);
+
+        if (!pendingRes.ok || !activeRes.ok || !myClassesRes.ok) {
+          throw new Error("Failed to load admin data");
+        }
+
+        setPending(await pendingRes.json());
+        setActive(await activeRes.json());
+        setMyClasses(await myClassesRes.json());
       }
-
-      setStats(await statsRes.json());
-      setPending(await pendingRes.json());
-      setActive(await activeRes.json());
-      setGear(await gearRes.json());
-      setCategories(await categoriesRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load admin data");
     } finally {
@@ -678,8 +1022,10 @@ export function AdminPage() {
   };
 
   useEffect(() => {
+    if (!role) return;
     refreshAll();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role]);
 
   const handleApprove = async (rental: PendingRental) => {
     if (!window.confirm(`Approve ${rental.studentName}'s request for ${rental.quantity} × ${rental.gearName}?`)) return;
@@ -754,6 +1100,10 @@ export function AdminPage() {
       g.name.toLowerCase().includes(search.toLowerCase()) ||
       (g.category ?? "").toLowerCase().includes(search.toLowerCase())
   );
+  const filteredClasses = classes.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
+  const filteredMyClasses = myClasses.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
+
+  const tabs = isAdmin ? ADMIN_TABS : TEACHER_TABS;
 
   return (
     <div className="space-y-6">
@@ -770,6 +1120,19 @@ export function AdminPage() {
         />
       )}
 
+      {classDetailId !== null && (
+        <ClassDetailModal
+          classId={classDetailId}
+          isAdmin={isAdmin}
+          onClose={() => setClassDetailId(null)}
+          onChanged={refreshAll}
+        />
+      )}
+
+      {showCreateClass && (
+        <CreateClassModal onClose={() => setShowCreateClass(false)} onCreated={refreshAll} />
+      )}
+
       {/* Page header */}
       <div>
         <h1 className="text-gray-900">Admin Dashboard</h1>
@@ -777,27 +1140,29 @@ export function AdminPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: "Pending Requests", value: stats?.pending ?? 0 },
-          { label: "Active Rentals", value: stats?.active ?? 0 },
-          { label: "Overdue", value: stats?.overdue ?? 0, warn: (stats?.overdue ?? 0) > 0 },
-          { label: "Total Gear", value: stats?.totalGear ?? 0 },
-        ].map((s) => (
-          <div
-            key={s.label}
-            className={`rounded-xl border px-4 py-3 bg-white ${s.warn ? "border-red-200" : "border-gray-200"}`}
-          >
-            <div className={`text-2xl font-bold ${s.warn ? "text-red-600" : "text-gray-900"}`}>{s.value}</div>
-            <div className="text-xs text-gray-500 mt-0.5">{s.label}</div>
-          </div>
-        ))}
-      </div>
+      {isAdmin && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: "Pending Requests", value: stats?.pending ?? 0 },
+            { label: "Active Rentals", value: stats?.active ?? 0 },
+            { label: "Overdue", value: stats?.overdue ?? 0, warn: (stats?.overdue ?? 0) > 0 },
+            { label: "Total Gear", value: stats?.totalGear ?? 0 },
+          ].map((s) => (
+            <div
+              key={s.label}
+              className={`rounded-xl border px-4 py-3 bg-white ${s.warn ? "border-red-200" : "border-gray-200"}`}
+            >
+              <div className={`text-2xl font-bold ${s.warn ? "text-red-600" : "text-gray-900"}`}>{s.value}</div>
+              <div className="text-xs text-gray-500 mt-0.5">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Tabs + search */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
         <div className="flex border border-gray-200 rounded-lg overflow-hidden bg-white">
-          {TABS.map(({ id, label, icon: Icon }) => (
+          {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => { setActiveTab(id); setSearch(""); }}
@@ -832,6 +1197,7 @@ export function AdminPage() {
               <tr>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Student</th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Item</th>
+                <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Class</th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Dates</th>
                 <th className="px-5 py-3" />
               </tr>
@@ -847,6 +1213,7 @@ export function AdminPage() {
                     <p className="text-sm text-gray-800">{r.quantity} × {r.gearName}</p>
                     <p className="text-xs text-gray-400">{r.quantityAvailable} available</p>
                   </td>
+                  <td className="px-5 py-4 text-sm text-gray-500">{r.className ?? "—"}</td>
                   <td className="px-5 py-4 text-sm text-gray-500">
                     {formatDate(r.rentalStart)} – {formatDate(r.returnDue)}
                   </td>
@@ -878,6 +1245,7 @@ export function AdminPage() {
               <tr>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Student</th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Item</th>
+                <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Class</th>
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Due</th>
                 <th className="px-5 py-3" />
               </tr>
@@ -890,6 +1258,7 @@ export function AdminPage() {
                     <p className="text-xs text-gray-400">{r.studentEmail}</p>
                   </td>
                   <td className="px-5 py-4 text-sm text-gray-800">{r.quantity} × {r.gearName}</td>
+                  <td className="px-5 py-4 text-sm text-gray-500">{r.className ?? "—"}</td>
                   <td className="px-5 py-4">
                     {r.isOverdue ? (
                       <span className="inline-flex items-center gap-1 text-xs text-red-600 font-medium">
@@ -958,6 +1327,60 @@ export function AdminPage() {
               ))}
             </tbody>
           </table>
+        )}
+
+        {activeTab === "classes" && isAdmin && (
+          <div className="p-5 space-y-3">
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowCreateClass(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 transition-colors"
+              >
+                <PlusCircle className="w-3.5 h-3.5" /> Create Class
+              </button>
+            </div>
+            <div className="divide-y divide-gray-100 border border-gray-200 rounded-xl overflow-hidden">
+              {filteredClasses.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setClassDetailId(c.id)}
+                  className="w-full text-left px-5 py-4 hover:bg-gray-50 transition-colors flex items-center justify-between"
+                >
+                  <div>
+                    <p className="font-medium text-gray-900 text-sm">{c.name}</p>
+                    {c.description && <p className="text-xs text-gray-400">{c.description}</p>}
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    {c.teacherCount} teacher{c.teacherCount === 1 ? "" : "s"} · {c.studentCount} student{c.studentCount === 1 ? "" : "s"}
+                  </div>
+                </button>
+              ))}
+              {filteredClasses.length === 0 && (
+                <div className="px-5 py-12 text-center text-gray-400 text-sm">No classes yet.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "classes" && isTeacher && (
+          <div className="p-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {filteredMyClasses.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setClassDetailId(c.id)}
+                  className="text-left p-4 border border-gray-200 rounded-xl hover:shadow-md transition-shadow bg-white"
+                >
+                  <p className="font-medium text-gray-900 text-sm">{c.name}</p>
+                </button>
+              ))}
+              {filteredMyClasses.length === 0 && (
+                <div className="col-span-full px-5 py-12 text-center text-gray-400 text-sm">
+                  You're not assigned to any classes.
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {activeTab === "add" && (
