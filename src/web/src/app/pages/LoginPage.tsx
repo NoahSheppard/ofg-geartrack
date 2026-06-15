@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Aperture, GraduationCap, ShieldAlert } from "lucide-react";
+import { Aperture, GraduationCap, ShieldAlert, BookUser } from "lucide-react";
 
-async function devLogin(role: "student" | "admin") {
+async function devLogin(role: "student" | "teacher" | "admin") {
   const res = await fetch("/auth/dev-login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -14,9 +14,9 @@ async function devLogin(role: "student" | "admin") {
 }
 
 export function LoginPage() {
-  const [loading, setLoading] = useState<"student" | "admin" | null>(null);
+  const [loading, setLoading] = useState<"student" | "teacher" | "admin" | null>(null);
 
-  const handleDevLogin = async (role: "student" | "admin") => {
+  const handleDevLogin = async (role: "student" | "teacher" | "admin") => {
     setLoading(role);
     try {
       await devLogin(role);
@@ -30,7 +30,7 @@ export function LoginPage() {
       <div className="w-full max-w-sm bg-white border border-gray-200 rounded-2xl p-8 text-center space-y-6">
         <div className="flex items-center justify-center gap-2">
           <Aperture className="w-6 h-6 text-blue-600" />
-          <span className="font-bold text-gray-900 tracking-tight text-lg">MediaGear</span>
+          <span className="font-bold text-gray-900 tracking-tight text-lg">GearTrack</span>
         </div>
 
         <div>
@@ -50,6 +50,14 @@ export function LoginPage() {
             >
               <GraduationCap className="w-4 h-4" />
               {loading === "student" ? "Signing in…" : "Continue as Student"}
+            </button>
+            <button
+              onClick={() => handleDevLogin("teacher")}
+              disabled={loading !== null}
+              className="w-full flex items-center justify-center gap-2 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+            >
+              <BookUser className="w-4 h-4" />
+              {loading === "teacher" ? "Signing in…" : "Continue as Teacher"}
             </button>
             <button
               onClick={() => handleDevLogin("admin")}
