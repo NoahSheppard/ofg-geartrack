@@ -71,6 +71,7 @@ function sanitize(params) {
 async function initialOperation() {
     db.exec(`PRAGMA foreign_keys = ON`);
     await createTables();
+    await migrateTables();
 }
 
 async function createTables() {
@@ -144,11 +145,32 @@ async function createTables() {
     );
 }
 
+// Adds inventory-tracking columns to `gear` for existing databases created
+// before these fields existed. CREATE TABLE IF NOT EXISTS doesn't add columns
+// to an already-existing table, so we check for and ALTER them in separately.
+async function migrateTables() {
+    const columns = await all(db, `PRAGMA table_info(gear)`);
+    const existing = new Set(columns.map((c) => c.name));
+
+    const newColumns = {
+        manufacturer: 'TEXT',
+        model_no: 'TEXT',
+        serial_no: 'TEXT',
+        type: 'TEXT',
+    };
+
+    for (const [name, type] of Object.entries(newColumns)) {
+        if (!existing.has(name)) {
+            await execute(db, `ALTER TABLE gear ADD COLUMN ${name} ${type}`);
+        }
+    }
+}
+
 export {
-    db, 
+    db,
     execute,
     initialOperation,
-    run, 
-    get, 
+    run,
+    get,
     all
 };
