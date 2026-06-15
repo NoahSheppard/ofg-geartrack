@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Clock, Package, X, Search } from "lucide-react";
-import type { Gear } from "../types";
+import type { ClassSummary, Gear } from "../types";
+import { useCurrentUser } from "../hooks/useCurrentUser";
 
 const CATEGORY_COLORS: Record<string, string> = {
   Cameras: "text-violet-600 bg-violet-50",
@@ -17,6 +18,7 @@ type RentalFormValues = {
   rentalStart: string;
   returnDue: string;
   purpose: string;
+  classId: string;
 };
 
 function todayISO() {
@@ -29,10 +31,15 @@ function tomorrowISO() {
 
 export function RentalPage() {
   const [gear, setGear] = useState<Gear[]>([]);
+  const [classes, setClasses] = useState<ClassSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedGearId, setSelectedGearId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+
+  const currentUser = useCurrentUser();
+  const role = currentUser.status === "ok" ? currentUser.user.role : undefined;
+  const needsClass = role === "student" || role === "teacher";
 
   const {
     register,
@@ -41,7 +48,7 @@ export function RentalPage() {
     watch,
     formState: { errors, isSubmitting },
   } = useForm<RentalFormValues>({
-    defaultValues: { quantity: 1, rentalStart: todayISO(), returnDue: tomorrowISO(), purpose: "" },
+    defaultValues: { quantity: 1, rentalStart: todayISO(), returnDue: tomorrowISO(), purpose: "", classId: "" },
   });
 
   const rentalStart = watch("rentalStart");
@@ -57,6 +64,16 @@ export function RentalPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    fetch("/api/classes/me", { credentials: "include" })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(setClasses)
+      .catch(() => setClasses([]));
+  }, []);
+
   const filteredGear = gear.filter(
     (g) =>
       g.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -65,7 +82,7 @@ export function RentalPage() {
 
   const openRequestForm = (item: Gear) => {
     setSelectedGearId(item.id);
-    reset({ quantity: 1, rentalStart: todayISO(), returnDue: tomorrowISO(), purpose: "" });
+    reset({ quantity: 1, rentalStart: todayISO(), returnDue: tomorrowISO(), purpose: "", classId: "" });
   };
 
   const onSubmit = async (item: Gear, values: RentalFormValues) => {
@@ -80,6 +97,7 @@ export function RentalPage() {
           rentalStart: values.rentalStart,
           returnDue: values.returnDue,
           purpose: values.purpose || undefined,
+          classId: values.classId ? Number(values.classId) : undefined,
         }),
       });
 
@@ -90,7 +108,7 @@ export function RentalPage() {
         return;
       }
 
-      toast.success("Request submitted — pending approval");
+      toast.success(body.status === "approved" ? "Request approved" : "Request submitted — pending approval");
       setSelectedGearId(null);
     } catch {
       toast.error("Failed to submit request");
@@ -221,6 +239,34 @@ export function RentalPage() {
                         </div>
                       </div>
 
+                      {needsClass && (
+                        <div>
+                          <label className="text-xs font-medium text-gray-600">For class</label>
+                          {classes.length === 0 ? (
+                            <p className="text-xs text-amber-600 mt-1">
+                              You're not enrolled in any classes — contact a teacher or admin.
+                            </p>
+                          ) : (
+                            <>
+                              <select
+                                className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                                {...register("classId", { required: true })}
+                              >
+                                <option value="">Select a class…</option>
+                                {classes.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {errors.classId && (
+                                <p className="text-xs text-red-500 mt-1">Select a class for this request.</p>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
+
                       <div>
                         <label className="text-xs font-medium text-gray-600">Purpose (optional)</label>
                         <textarea
@@ -234,7 +280,7 @@ export function RentalPage() {
                     <div className="flex gap-2">
                       <button
                         type="submit"
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || (needsClass && classes.length === 0)}
                         className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
                       >
                         {isSubmitting ? "Submitting…" : "Submit Request"}
