@@ -4,5 +4,6 @@ output/
 test/
 certificates/
 db/idp.db
+db/*.local-backup
 
 ‘~/
