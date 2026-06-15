@@ -109,23 +109,56 @@ async function createTables() {
         )`
     );
 
-    await execute(db, 
+    await execute(db,
+        `CREATE TABLE IF NOT EXISTS classes (
+        class_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`
+    );
+
+    await execute(db,
+        `CREATE TABLE IF NOT EXISTS class_teachers (
+        class_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (class_id, user_id),
+        FOREIGN KEY (class_id) REFERENCES classes(class_id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )`
+    );
+
+    await execute(db,
+        `CREATE TABLE IF NOT EXISTS class_enrollments (
+        class_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (class_id, user_id),
+        FOREIGN KEY (class_id) REFERENCES classes(class_id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )`
+    );
+
+    await execute(db,
         `CREATE TABLE IF NOT EXISTS rentals (
         rental_id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         gear_id INTEGER,
-        quantity INTEGER NOT NULL DEFAULT 1, 
+        quantity INTEGER NOT NULL DEFAULT 1,
         rental_start DATE NOT NULL,
         return_due DATE NOT NULL,
         return_actual DATE NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         approved_by INTEGER NULL,
         rejection_reason TEXT NULL,
+        class_id INTEGER NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(user_id),
         FOREIGN KEY (gear_id) REFERENCES gear(gear_id),
-        FOREIGN KEY (approved_by) REFERENCES users(user_id)
+        FOREIGN KEY (approved_by) REFERENCES users(user_id),
+        FOREIGN KEY (class_id) REFERENCES classes(class_id)
         )`
     );
 
@@ -163,6 +196,13 @@ async function migrateTables() {
         if (!existing.has(name)) {
             await execute(db, `ALTER TABLE gear ADD COLUMN ${name} ${type}`);
         }
+    }
+
+    const rentalColumns = await all(db, `PRAGMA table_info(rentals)`);
+    const existingRentalColumns = new Set(rentalColumns.map((c) => c.name));
+
+    if (!existingRentalColumns.has('class_id')) {
+        await execute(db, `ALTER TABLE rentals ADD COLUMN class_id INTEGER NULL`);
     }
 }
 

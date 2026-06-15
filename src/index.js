@@ -20,6 +20,7 @@ import {
     getUserByEmail,
 } from './util/user.js';
 import { logAction } from './util/audit.js';
+import { getClassesForUser, isTeacherOfClass } from './util/classes.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -109,8 +110,9 @@ passport.use(new SamlStrategy(
             uid:       profile?.uid       || attributes.uid       || username,
             // Normalize casing — the IdP sends roles like "Admin", but
             // requireAdmin() and the stored user records expect lowercase
-            // ('admin', 'teacher', 'student').
-            role:      (profile?.role || attributes.role || '').toLowerCase() || undefined,
+            // ('admin', 'teacher', 'student'). The IdP sends an empty role
+            // attribute for students, so default to 'student' here too.
+            role:      (profile?.role || attributes.role || 'student').toLowerCase(),
         };
 
         if (DEBUG) console.log('[SAML] Profile:', user);
@@ -130,8 +132,16 @@ function requireAuth(req, res, next) {
     res.status(401).json({ error: 'Unauthorized' });
 }
 
-// Protects admin-only routes.
+// Protects strictly admin-only routes (gear/category management, class
+// management, stats).
 function requireAdmin(req, res, next) {
+    if (req.user?.role === 'admin') return next();
+    res.status(403).json({ error: 'Forbidden' });
+}
+
+// Protects routes shared by admins and teachers (rental queues — each route
+// applies its own per-request teacher scoping/ownership checks).
+function requireStaff(req, res, next) {
     const role = req.user?.role;
     if (role === 'admin' || role === 'teacher') return next();
     res.status(403).json({ error: 'Forbidden' });
@@ -217,9 +227,17 @@ app.get('/logout', (req, res) => {
 // bypass account" mitigation for risk R-01 (SAML SSO outage).
 if (DEBUG) {
     app.post('/auth/dev-login', async (req, res) => {
-        const role = req.body?.role === 'admin' ? 'admin' : 'student';
-        const email = role === 'admin' ? 'dev.admin@hs.edu' : 'dev.student@hs.edu';
-        const displayName = role === 'admin' ? 'Dev Admin' : 'Dev Student';
+        const role = ['admin', 'teacher'].includes(req.body?.role) ? req.body.role : 'student';
+        const email = {
+            admin:   '[dev]admin@ofg.nsw.edu.au',
+            teacher: '[dev]teacher@ofg.nsw.edu.au',
+            student: '[dev]student@ofgsstudents.com',
+        }[role];
+        const displayName = {
+            admin:   'Dev Admin',
+            teacher: 'Dev Teacher',
+            student: 'Dev Student',
+        }[role];
 
         try {
             const existing = await getUserByEmail(db, email);
@@ -291,6 +309,92 @@ app.get('/api/gear', requireAuth, async (req, res) => {
     }
 });
 
+// ─── API: Classes ─────────────────────────────────────────────────────────────
+
+// GET /api/classes/me
+// Returns the classes the current user belongs to — as a student
+// (class_enrollments) or as a teacher/admin (class_teachers). Used by the
+// rental-request class picker and the teacher's "My Classes" tab.
+app.get('/api/classes/me', requireAuth, async (req, res) => {
+    try {
+        const userRow = await getUserByEmail(db, req.user.email);
+        if (!userRow) return res.json([]);
+
+        const classes = await getClassesForUser(db, userRow.user_id, req.user.role);
+        res.json(classes);
+    } catch (err) {
+        console.error('[GET /api/classes/me]', err);
+        res.status(500).json({ error: 'Failed to fetch classes' });
+    }
+});
+
+// GET /api/classes/:id
+// Roster + the current user's own rentals for a class they belong to.
+// Students see their teachers/classmates; teachers/admins are also members
+// (via class_teachers) and can use this for their own classes. This is the
+// student-facing counterpart to /api/admin/classes/:id, which additionally
+// exposes every student's rentals and is restricted to staff.
+app.get('/api/classes/:id', requireAuth, async (req, res) => {
+    const classId = req.params.id;
+
+    try {
+        const userRow = await getUserByEmail(db, req.user.email);
+        if (!userRow) return res.status(404).json({ error: 'Class not found' });
+
+        const classRow = await get(db, `
+            SELECT class_id AS id, name, description FROM classes WHERE class_id = ?
+        `, [classId]);
+        if (!classRow) return res.status(404).json({ error: 'Class not found' });
+
+        if (req.user.role === 'teacher') {
+            if (!(await isTeacherOfClass(db, userRow.user_id, classId))) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        } else if (req.user.role !== 'admin') {
+            const enrolled = await get(db, `
+                SELECT 1 FROM class_enrollments WHERE class_id = ? AND user_id = ?
+            `, [classId, userRow.user_id]);
+            if (!enrolled) return res.status(403).json({ error: 'Forbidden' });
+        }
+
+        const teachers = await all(db, `
+            SELECT u.user_id AS id, u.display_name AS displayName, u.email, u.role
+            FROM class_teachers ct
+            JOIN users u ON u.user_id = ct.user_id
+            WHERE ct.class_id = ?
+            ORDER BY u.display_name
+        `, [classId]);
+
+        const students = await all(db, `
+            SELECT u.user_id AS id, u.display_name AS displayName, u.email, u.role
+            FROM class_enrollments ce
+            JOIN users u ON u.user_id = ce.user_id
+            WHERE ce.class_id = ?
+            ORDER BY u.display_name
+        `, [classId]);
+
+        const myRentals = await all(db, `
+            SELECT
+                r.rental_id    AS id,
+                r.quantity,
+                r.rental_start AS rentalStart,
+                r.return_due   AS returnDue,
+                r.status,
+                g.name         AS gearName
+            FROM rentals r
+            JOIN gear g ON g.gear_id = r.gear_id
+            WHERE r.class_id = ? AND r.user_id = ?
+            ORDER BY r.created_at DESC
+            LIMIT 50
+        `, [classId, userRow.user_id]);
+
+        res.json({ ...classRow, teachers, students, myRentals });
+    } catch (err) {
+        console.error(`[GET /api/classes/${req.params.id}]`, err);
+        res.status(500).json({ error: 'Failed to fetch class' });
+    }
+});
+
 // ─── API: Rentals ─────────────────────────────────────────────────────────────
 
 // GET /api/rentals/me
@@ -335,13 +439,29 @@ app.get('/api/rentals/me', requireAuth, async (req, res) => {
     }
 });
 
+// Attempts to decrement gear.quantity_available by `quantity`, guarded
+// against overselling. Must be called inside an open transaction (BEGIN
+// IMMEDIATE). Returns true if the decrement succeeded, false if there wasn't
+// enough availability (caller should ROLLBACK).
+async function tryDecrementGear(db, gearId, quantity) {
+    const result = await run(db, `
+        UPDATE gear SET quantity_available = quantity_available - ?
+        WHERE gear_id = ? AND quantity_available >= ?
+    `, [quantity, gearId, quantity]);
+    return result.changes === 1;
+}
+
 // POST /api/rentals
-// Submits a new rental request from the Rental page. Creates a 'pending'
-// rental record — availability is only adjusted on admin approval.
-// Body: { gearId, quantity, rentalStart, returnDue, purpose? }
+// Submits a new rental request from the Rental page.
+// - Students: creates a 'pending' rental tied to a class they're enrolled
+//   in — availability is only adjusted on staff approval.
+// - Teachers: auto-approved immediately, tied to a class they teach.
+// - Admins: auto-approved immediately, with no class attached.
+// Body: { gearId, quantity, rentalStart, returnDue, purpose?, classId? }
 app.post('/api/rentals', requireAuth, async (req, res) => {
     const { gearId, quantity, rentalStart, returnDue, purpose } = req.body;
     const qty = Number(quantity);
+    const role = req.user.role;
 
     if (!gearId || !Number.isInteger(qty) || qty < 1) {
         return res.status(400).json({ error: 'gearId and quantity (≥ 1) are required' });
@@ -358,30 +478,90 @@ app.post('/api/rentals', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'returnDue must be after rentalStart' });
     }
 
+    let classId = null;
+    if (role !== 'admin') {
+        classId = Number(req.body.classId);
+        if (!req.body.classId || !Number.isInteger(classId)) {
+            return res.status(400).json({ error: 'classId is required' });
+        }
+    }
+
     try {
         const userRow = await getUserByEmail(db, req.user.email);
         if (!userRow) return res.status(404).json({ error: 'User not found' });
 
         const gear = await get(db, 'SELECT * FROM gear WHERE gear_id = ?', [gearId]);
         if (!gear) return res.status(404).json({ error: 'Gear not found' });
-        if (gear.quantity_available < qty) {
-            return res.status(409).json({ error: 'Insufficient availability' });
+
+        if (role === 'student') {
+            const enrolled = await get(db, `
+                SELECT 1 FROM class_enrollments WHERE class_id = ? AND user_id = ?
+            `, [classId, userRow.user_id]);
+            if (!enrolled) return res.status(403).json({ error: 'You are not enrolled in that class' });
+
+            if (gear.quantity_available < qty) {
+                return res.status(409).json({ error: 'Insufficient availability' });
+            }
+
+            const result = await run(db, `
+                INSERT INTO rentals (user_id, gear_id, quantity, rental_start, return_due, status, class_id)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            `, [userRow.user_id, gearId, qty, rentalStart, returnDue, classId]);
+
+            await logAction(db, {
+                actorUserId: userRow.user_id,
+                action: 'REQUEST',
+                targetRentalId: result.lastID,
+                targetGearId: gearId,
+                details: { quantity: qty, rentalStart, returnDue, purpose: purpose || null, classId },
+            });
+
+            return res.status(201).json({ message: 'Rental request submitted', rentalId: result.lastID, status: 'pending' });
         }
 
-        const result = await run(db, `
-            INSERT INTO rentals (user_id, gear_id, quantity, rental_start, return_due, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
-        `, [userRow.user_id, gearId, qty, rentalStart, returnDue]);
+        // teacher / admin — auto-approved
+        if (role === 'teacher') {
+            if (!(await isTeacherOfClass(db, userRow.user_id, classId))) {
+                return res.status(403).json({ error: 'You do not teach that class' });
+            }
+        }
 
-        await logAction(db, {
-            actorUserId: userRow.user_id,
-            action: 'REQUEST',
-            targetRentalId: result.lastID,
-            targetGearId: gearId,
-            details: { quantity: qty, rentalStart, returnDue, purpose: purpose || null },
-        });
+        const rentalClassId = role === 'admin' ? null : classId;
 
-        res.status(201).json({ message: 'Rental request submitted', rentalId: result.lastID });
+        await run(db, 'BEGIN IMMEDIATE');
+        try {
+            if (!(await tryDecrementGear(db, gearId, qty))) {
+                await run(db, 'ROLLBACK');
+                return res.status(409).json({ error: 'Insufficient availability' });
+            }
+
+            const result = await run(db, `
+                INSERT INTO rentals (user_id, gear_id, quantity, rental_start, return_due, status, approved_by, class_id)
+                VALUES (?, ?, ?, ?, ?, 'approved', ?, ?)
+            `, [userRow.user_id, gearId, qty, rentalStart, returnDue, userRow.user_id, rentalClassId]);
+
+            await logAction(db, {
+                actorUserId: userRow.user_id,
+                action: 'REQUEST',
+                targetRentalId: result.lastID,
+                targetGearId: gearId,
+                details: { quantity: qty, rentalStart, returnDue, purpose: purpose || null, classId: rentalClassId },
+            });
+
+            await logAction(db, {
+                actorUserId: userRow.user_id,
+                action: 'APPROVE',
+                targetRentalId: result.lastID,
+                targetGearId: gearId,
+                details: { classId: rentalClassId, autoApproved: true },
+            });
+
+            await run(db, 'COMMIT');
+            res.status(201).json({ message: 'Rental approved', rentalId: result.lastID, status: 'approved' });
+        } catch (err) {
+            await run(db, 'ROLLBACK');
+            throw err;
+        }
     } catch (err) {
         console.error('[POST /api/rentals]', err);
         res.status(500).json({ error: 'Failed to create rental request' });
@@ -392,8 +572,16 @@ app.post('/api/rentals', requireAuth, async (req, res) => {
 
 // GET /api/admin/rentals/pending
 // All pending requests for the admin approval queue.
-app.get('/api/admin/rentals/pending', requireAuth, requireAdmin, async (req, res) => {
+app.get('/api/admin/rentals/pending', requireAuth, requireStaff, async (req, res) => {
     try {
+        let teacherFilter = '';
+        const params = [];
+        if (req.user.role === 'teacher') {
+            const userRow = await getUserByEmail(db, req.user.email);
+            teacherFilter = `AND r.class_id IN (SELECT class_id FROM class_teachers WHERE user_id = ?)`;
+            params.push(userRow.user_id);
+        }
+
         const rentals = await all(db, `
             SELECT
                 r.rental_id          AS id,
@@ -405,13 +593,17 @@ app.get('/api/admin/rentals/pending', requireAuth, requireAdmin, async (req, res
                 u.email              AS studentEmail,
                 g.gear_id            AS gearId,
                 g.name               AS gearName,
-                g.quantity_available AS quantityAvailable
+                g.quantity_available AS quantityAvailable,
+                r.class_id           AS classId,
+                c.name               AS className
             FROM rentals r
             JOIN users u ON u.user_id = r.user_id
             JOIN gear  g ON g.gear_id = r.gear_id
+            LEFT JOIN classes c ON c.class_id = r.class_id
             WHERE r.status = 'pending'
+            ${teacherFilter}
             ORDER BY r.created_at ASC
-        `);
+        `, params);
         res.json(rentals);
     } catch (err) {
         console.error('[GET /api/admin/rentals/pending]', err);
@@ -421,8 +613,16 @@ app.get('/api/admin/rentals/pending', requireAuth, requireAdmin, async (req, res
 
 // GET /api/admin/rentals/active
 // Approved rentals that have not yet been returned, for the Active Rentals tab.
-app.get('/api/admin/rentals/active', requireAuth, requireAdmin, async (req, res) => {
+app.get('/api/admin/rentals/active', requireAuth, requireStaff, async (req, res) => {
     try {
+        let teacherFilter = '';
+        const params = [];
+        if (req.user.role === 'teacher') {
+            const userRow = await getUserByEmail(db, req.user.email);
+            teacherFilter = `AND r.class_id IN (SELECT class_id FROM class_teachers WHERE user_id = ?)`;
+            params.push(userRow.user_id);
+        }
+
         const rentals = await all(db, `
             SELECT
                 r.rental_id    AS id,
@@ -433,13 +633,17 @@ app.get('/api/admin/rentals/active', requireAuth, requireAdmin, async (req, res)
                 u.email        AS studentEmail,
                 g.gear_id      AS gearId,
                 g.name         AS gearName,
-                (date(r.return_due) < date('now')) AS isOverdue
+                (date(r.return_due) < date('now')) AS isOverdue,
+                r.class_id     AS classId,
+                c.name         AS className
             FROM rentals r
             JOIN users u ON u.user_id = r.user_id
             JOIN gear  g ON g.gear_id = r.gear_id
+            LEFT JOIN classes c ON c.class_id = r.class_id
             WHERE r.status = 'approved' AND r.return_actual IS NULL
+            ${teacherFilter}
             ORDER BY r.return_due ASC
-        `);
+        `, params);
         res.json(rentals);
     } catch (err) {
         console.error('[GET /api/admin/rentals/active]', err);
@@ -451,7 +655,7 @@ app.get('/api/admin/rentals/active', requireAuth, requireAdmin, async (req, res)
 // Approves a pending request: decrements gear.quantity_available (guarded
 // against overselling via a conditional UPDATE inside a transaction) and
 // records the approving admin.
-app.patch('/api/admin/rentals/:id/approve', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/rentals/:id/approve', requireAuth, requireStaff, async (req, res) => {
     const rentalId = req.params.id;
 
     try {
@@ -463,14 +667,15 @@ app.patch('/api/admin/rentals/:id/approve', requireAuth, requireAdmin, async (re
 
         const adminRow = await getUserByEmail(db, req.user.email);
 
+        if (req.user.role === 'teacher') {
+            if (rental.class_id == null || !(await isTeacherOfClass(db, adminRow.user_id, rental.class_id))) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+
         await run(db, 'BEGIN IMMEDIATE');
         try {
-            const result = await run(db, `
-                UPDATE gear SET quantity_available = quantity_available - ?
-                WHERE gear_id = ? AND quantity_available >= ?
-            `, [rental.quantity, rental.gear_id, rental.quantity]);
-
-            if (result.changes !== 1) {
+            if (!(await tryDecrementGear(db, rental.gear_id, rental.quantity))) {
                 await run(db, 'ROLLBACK');
                 return res.status(409).json({ error: 'Insufficient availability to approve this request' });
             }
@@ -504,7 +709,7 @@ app.patch('/api/admin/rentals/:id/approve', requireAuth, requireAdmin, async (re
 // Rejects a pending request with a mandatory reason. Availability is
 // untouched, since approval never decremented it.
 // Body: { reason }
-app.patch('/api/admin/rentals/:id/reject', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/rentals/:id/reject', requireAuth, requireStaff, async (req, res) => {
     const rentalId = req.params.id;
     const reason = req.body?.reason?.trim();
 
@@ -520,6 +725,12 @@ app.patch('/api/admin/rentals/:id/reject', requireAuth, requireAdmin, async (req
         }
 
         const adminRow = await getUserByEmail(db, req.user.email);
+
+        if (req.user.role === 'teacher') {
+            if (rental.class_id == null || !(await isTeacherOfClass(db, adminRow.user_id, rental.class_id))) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
 
         await run(db, `
             UPDATE rentals SET status = 'rejected', rejection_reason = ?, approved_by = ?, updated_at = CURRENT_TIMESTAMP
@@ -543,7 +754,7 @@ app.patch('/api/admin/rentals/:id/reject', requireAuth, requireAdmin, async (req
 
 // PATCH /api/admin/rentals/:id/return
 // Marks an approved rental as returned, restoring gear.quantity_available.
-app.patch('/api/admin/rentals/:id/return', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/rentals/:id/return', requireAuth, requireStaff, async (req, res) => {
     const rentalId = req.params.id;
 
     try {
@@ -554,6 +765,12 @@ app.patch('/api/admin/rentals/:id/return', requireAuth, requireAdmin, async (req
         }
 
         const adminRow = await getUserByEmail(db, req.user.email);
+
+        if (req.user.role === 'teacher') {
+            if (rental.class_id == null || !(await isTeacherOfClass(db, adminRow.user_id, rental.class_id))) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
 
         await run(db, 'BEGIN IMMEDIATE');
         try {
@@ -834,6 +1051,243 @@ app.patch('/api/admin/gear/:id', requireAuth, requireAdmin, async (req, res) => 
     } catch (err) {
         console.error(`[PATCH /api/admin/gear/${req.params.id}]`, err);
         res.status(500).json({ error: 'Failed to update gear' });
+    }
+});
+
+// ─── API: Admin — Classes ─────────────────────────────────────────────────────
+
+// GET /api/admin/classes
+// All classes with teacher/student counts, for the admin Classes tab.
+app.get('/api/admin/classes', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const classes = await all(db, `
+            SELECT
+                c.class_id AS id,
+                c.name,
+                c.description,
+                (SELECT COUNT(*) FROM class_teachers ct WHERE ct.class_id = c.class_id) AS teacherCount,
+                (SELECT COUNT(*) FROM class_enrollments ce WHERE ce.class_id = c.class_id) AS studentCount
+            FROM classes c
+            ORDER BY c.name
+        `);
+        res.json(classes);
+    } catch (err) {
+        console.error('[GET /api/admin/classes]', err);
+        res.status(500).json({ error: 'Failed to fetch classes' });
+    }
+});
+
+// POST /api/admin/classes
+// Creates a new class. Body: { name, description? }
+app.post('/api/admin/classes', requireAuth, requireAdmin, async (req, res) => {
+    const name = (req.body.name || '').trim();
+    const description = (req.body.description || '').trim() || null;
+
+    if (!name) {
+        return res.status(400).json({ error: 'Class name is required' });
+    }
+
+    try {
+        const result = await run(db, `
+            INSERT INTO classes (name, description) VALUES (?, ?)
+        `, [name, description]);
+
+        const userRow = await getUserByEmail(db, req.user.email);
+        await logAction(db, {
+            actorUserId: userRow?.user_id,
+            action: 'CREATE_CLASS',
+            details: { classId: result.lastID, name },
+        });
+
+        res.status(201).json({ id: result.lastID, name, description, teacherCount: 0, studentCount: 0 });
+    } catch (err) {
+        console.error('[POST /api/admin/classes]', err);
+        res.status(500).json({ error: 'Failed to create class' });
+    }
+});
+
+// GET /api/admin/classes/:id
+// Full class detail (roster + recent rentals). Admins can view any class;
+// teachers only their own — this is also used by the teacher's read-only
+// "My Classes" roster view.
+app.get('/api/admin/classes/:id', requireAuth, requireStaff, async (req, res) => {
+    const classId = req.params.id;
+
+    try {
+        const classRow = await get(db, `
+            SELECT class_id AS id, name, description FROM classes WHERE class_id = ?
+        `, [classId]);
+        if (!classRow) return res.status(404).json({ error: 'Class not found' });
+
+        if (req.user.role === 'teacher') {
+            const userRow = await getUserByEmail(db, req.user.email);
+            if (!(await isTeacherOfClass(db, userRow.user_id, classId))) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+
+        const teachers = await all(db, `
+            SELECT u.user_id AS id, u.display_name AS displayName, u.email, u.role
+            FROM class_teachers ct
+            JOIN users u ON u.user_id = ct.user_id
+            WHERE ct.class_id = ?
+            ORDER BY u.display_name
+        `, [classId]);
+
+        const students = await all(db, `
+            SELECT u.user_id AS id, u.display_name AS displayName, u.email, u.role
+            FROM class_enrollments ce
+            JOIN users u ON u.user_id = ce.user_id
+            WHERE ce.class_id = ?
+            ORDER BY u.display_name
+        `, [classId]);
+
+        const rentals = await all(db, `
+            SELECT
+                r.rental_id    AS id,
+                r.quantity,
+                r.rental_start AS rentalStart,
+                r.return_due   AS returnDue,
+                r.status,
+                u.display_name AS studentName,
+                g.name         AS gearName
+            FROM rentals r
+            JOIN users u ON u.user_id = r.user_id
+            JOIN gear  g ON g.gear_id = r.gear_id
+            WHERE r.class_id = ?
+            ORDER BY r.created_at DESC
+            LIMIT 50
+        `, [classId]);
+
+        res.json({ ...classRow, teachers, students, rentals });
+    } catch (err) {
+        console.error(`[GET /api/admin/classes/${req.params.id}]`, err);
+        res.status(500).json({ error: 'Failed to fetch class' });
+    }
+});
+
+// POST /api/admin/classes/:id/teachers
+// Adds a teacher to a class. Body: { userId }
+app.post('/api/admin/classes/:id/teachers', requireAuth, requireAdmin, async (req, res) => {
+    const classId = req.params.id;
+    const userId = req.body?.userId;
+
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    try {
+        const classRow = await get(db, 'SELECT class_id FROM classes WHERE class_id = ?', [classId]);
+        if (!classRow) return res.status(404).json({ error: 'Class not found' });
+
+        const targetUser = await get(db, 'SELECT user_id FROM users WHERE user_id = ?', [userId]);
+        if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+        await run(db, `INSERT OR IGNORE INTO class_teachers (class_id, user_id) VALUES (?, ?)`, [classId, userId]);
+
+        const actorRow = await getUserByEmail(db, req.user.email);
+        await logAction(db, {
+            actorUserId: actorRow?.user_id,
+            action: 'ADD_CLASS_TEACHER',
+            details: { classId: Number(classId), userId: Number(userId) },
+        });
+
+        res.status(201).json({ message: 'Teacher added' });
+    } catch (err) {
+        console.error(`[POST /api/admin/classes/${req.params.id}/teachers]`, err);
+        res.status(500).json({ error: 'Failed to add teacher' });
+    }
+});
+
+// DELETE /api/admin/classes/:id/teachers/:userId
+app.delete('/api/admin/classes/:id/teachers/:userId', requireAuth, requireAdmin, async (req, res) => {
+    const { id: classId, userId } = req.params;
+
+    try {
+        await run(db, `DELETE FROM class_teachers WHERE class_id = ? AND user_id = ?`, [classId, userId]);
+
+        const actorRow = await getUserByEmail(db, req.user.email);
+        await logAction(db, {
+            actorUserId: actorRow?.user_id,
+            action: 'REMOVE_CLASS_TEACHER',
+            details: { classId: Number(classId), userId: Number(userId) },
+        });
+
+        res.json({ message: 'Teacher removed' });
+    } catch (err) {
+        console.error(`[DELETE /api/admin/classes/${req.params.id}/teachers/${req.params.userId}]`, err);
+        res.status(500).json({ error: 'Failed to remove teacher' });
+    }
+});
+
+// POST /api/admin/classes/:id/students
+// Enrolls a student in a class. Body: { userId }
+app.post('/api/admin/classes/:id/students', requireAuth, requireAdmin, async (req, res) => {
+    const classId = req.params.id;
+    const userId = req.body?.userId;
+
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    try {
+        const classRow = await get(db, 'SELECT class_id FROM classes WHERE class_id = ?', [classId]);
+        if (!classRow) return res.status(404).json({ error: 'Class not found' });
+
+        const targetUser = await get(db, 'SELECT user_id FROM users WHERE user_id = ?', [userId]);
+        if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+        await run(db, `INSERT OR IGNORE INTO class_enrollments (class_id, user_id) VALUES (?, ?)`, [classId, userId]);
+
+        const actorRow = await getUserByEmail(db, req.user.email);
+        await logAction(db, {
+            actorUserId: actorRow?.user_id,
+            action: 'ADD_CLASS_STUDENT',
+            details: { classId: Number(classId), userId: Number(userId) },
+        });
+
+        res.status(201).json({ message: 'Student added' });
+    } catch (err) {
+        console.error(`[POST /api/admin/classes/${req.params.id}/students]`, err);
+        res.status(500).json({ error: 'Failed to add student' });
+    }
+});
+
+// DELETE /api/admin/classes/:id/students/:userId
+app.delete('/api/admin/classes/:id/students/:userId', requireAuth, requireAdmin, async (req, res) => {
+    const { id: classId, userId } = req.params;
+
+    try {
+        await run(db, `DELETE FROM class_enrollments WHERE class_id = ? AND user_id = ?`, [classId, userId]);
+
+        const actorRow = await getUserByEmail(db, req.user.email);
+        await logAction(db, {
+            actorUserId: actorRow?.user_id,
+            action: 'REMOVE_CLASS_STUDENT',
+            details: { classId: Number(classId), userId: Number(userId) },
+        });
+
+        res.json({ message: 'Student removed' });
+    } catch (err) {
+        console.error(`[DELETE /api/admin/classes/${req.params.id}/students/${req.params.userId}]`, err);
+        res.status(500).json({ error: 'Failed to remove student' });
+    }
+});
+
+// GET /api/admin/users?search=
+// User lookup for the admin Classes UI's "add teacher/student" search.
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+    const search = `%${(req.query.search || '').trim()}%`;
+
+    try {
+        const users = await all(db, `
+            SELECT user_id AS id, display_name AS displayName, email, role
+            FROM users
+            WHERE display_name LIKE ? OR email LIKE ?
+            ORDER BY display_name
+            LIMIT 20
+        `, [search, search]);
+
+        res.json(users);
+    } catch (err) {
+        console.error('[GET /api/admin/users]', err);
+        res.status(500).json({ error: 'Failed to fetch users' });
     }
 });
 
