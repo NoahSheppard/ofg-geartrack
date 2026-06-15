@@ -1,10 +1,11 @@
 import { Outlet, NavLink, Navigate } from "react-router";
-import { Aperture, Package, User, ShieldAlert, LogOut } from "lucide-react";
+import { Aperture, Package, User, Users, ShieldAlert, LogOut } from "lucide-react";
 import { useCurrentUser } from "./hooks/useCurrentUser";
 
 const NAV_LINKS = [
   { to: "/", label: "Rent Gear", icon: Package },
   { to: "/profile", label: "My Profile", icon: User },
+  { to: "/classes", label: "My Classes", icon: Users, studentOnly: true },
   { to: "/admin", label: "Admin", icon: ShieldAlert, adminOnly: true },
 ];
 
@@ -35,12 +36,12 @@ export function Layout() {
             <NavLink to="/" className="flex items-center gap-2">
               <div className="flex items-center gap-2">
                 <Aperture className="w-5 h-5 text-blue-600" />
-                <span className="font-bold text-gray-900 tracking-tight">MediaGear</span>
+                <span className="font-bold text-gray-900 tracking-tight">GearTrack</span>
               </div>
             </NavLink>
 
             <div className="flex items-center gap-1">
-              {NAV_LINKS.filter((link) => !link.adminOnly || isAdmin).map(({ to, label, icon: Icon }) => (
+              {NAV_LINKS.filter((link) => (!link.adminOnly || isAdmin) && (!link.studentOnly || !isAdmin)).map(({ to, label, icon: Icon }) => (
                 <NavLink
                   key={to}
                   to={to}
