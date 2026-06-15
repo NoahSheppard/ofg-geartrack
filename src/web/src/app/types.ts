@@ -57,6 +57,8 @@ export type PendingRental = {
   gearId: number;
   gearName: string;
   quantityAvailable: number;
+  classId: number | null;
+  className: string | null;
 };
 
 export type ActiveRental = {
@@ -69,6 +71,8 @@ export type ActiveRental = {
   gearId: number;
   gearName: string;
   isOverdue: number;
+  classId: number | null;
+  className: string | null;
 };
 
 export type AdminStats = {
@@ -76,4 +80,68 @@ export type AdminStats = {
   active: number;
   overdue: number;
   totalGear: number;
+};
+
+export type ClassSummary = {
+  id: number;
+  name: string;
+};
+
+export type ClassListItem = {
+  id: number;
+  name: string;
+  description: string | null;
+  teacherCount: number;
+  studentCount: number;
+};
+
+export type ClassMember = {
+  id: number;
+  displayName: string;
+  email: string;
+  role: string;
+};
+
+export type ClassRental = {
+  id: number;
+  quantity: number;
+  rentalStart: string;
+  returnDue: string;
+  status: RentalStatus;
+  studentName: string;
+  gearName: string;
+};
+
+export type ClassDetail = {
+  id: number;
+  name: string;
+  description: string | null;
+  teachers: ClassMember[];
+  students: ClassMember[];
+  rentals: ClassRental[];
+};
+
+export type MyClassRental = {
+  id: number;
+  quantity: number;
+  rentalStart: string;
+  returnDue: string;
+  status: RentalStatus;
+  gearName: string;
+};
+
+export type MyClassDetail = {
+  id: number;
+  name: string;
+  description: string | null;
+  teachers: ClassMember[];
+  students: ClassMember[];
+  myRentals: MyClassRental[];
+};
+
+export type UserSearchResult = {
+  id: number;
+  displayName: string;
+  email: string;
+  role: string;
 };
