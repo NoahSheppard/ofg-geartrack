@@ -5,6 +5,7 @@ import bodyParser from 'body-parser';
 import session from 'express-session';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import {
     db,
@@ -30,6 +31,11 @@ const DIST  = path.join(__dirname, 'web/dist');
 const PORT  = process.env.PORT || 3001;
 const DEBUG = process.env.NODE_ENV !== 'production';
 
+// Locally-hosted images (gear photos uploaded via the admin UI), served at /uploads/*
+const UPLOADS_DIR      = path.join(__dirname, 'uploads');
+const GEAR_UPLOADS_DIR = path.join(UPLOADS_DIR, 'gear');
+fs.mkdirSync(GEAR_UPLOADS_DIR, { recursive: true });
+
 const idpCert    = fs.readFileSync(path.join(__dirname, '../certificates/idp-signing.cert'), 'utf-8');
 const spCert     = fs.readFileSync(path.join(__dirname, '../certificates/sp-signing.cert'), 'utf-8');
 const entryPoint = process.env.IDP_ENTRY_POINT || 'http://localhost:3000/sso';
@@ -40,9 +46,10 @@ const app = express();
 
 initialOperation(); // run DB migrations / init
 
-// Parse incoming request bodies
+// Parse incoming request bodies. The JSON limit is raised from the 100kb
+// default so the admin gear-image upload (a base64 data URL) fits.
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' }));
 
 // Session (must come before passport)
 app.use(session({
@@ -61,6 +68,10 @@ app.use(passport.session());
 // Serve the Vite production build as static files.
 // This handles JS bundles, CSS, images, and / → index.html automatically.
 app.use(express.static(DIST));
+
+// Serve locally-hosted gear images (uploaded via the admin UI, or fetched
+// during catalogue setup) at /uploads/*.
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ─── SAML / Passport ─────────────────────────────────────────────────────────
 
@@ -648,6 +659,30 @@ app.post('/api/admin/categories', requireAuth, requireAdmin, async (req, res) =>
     } catch (err) {
         console.error('[POST /api/admin/categories]', err);
         res.status(500).json({ error: 'Failed to create category' });
+    }
+});
+
+// POST /api/admin/gear/upload-image
+// Accepts a base64 data URL (from the admin gear image picker), writes it to
+// /uploads/gear and returns its served path so it can be saved as a gear's
+// imageUrl without bloating the database.
+// Body: { dataUrl: "data:image/<png|jpeg|webp|gif>;base64,...." }
+const IMAGE_DATA_URL_RE = /^data:image\/(png|jpeg|jpg|webp|gif);base64,([a-zA-Z0-9+/]+=*)$/;
+
+app.post('/api/admin/gear/upload-image', requireAuth, requireAdmin, async (req, res) => {
+    const match = IMAGE_DATA_URL_RE.exec(req.body?.dataUrl || '');
+    if (!match) {
+        return res.status(400).json({ error: 'Expected a base64 image data URL' });
+    }
+
+    try {
+        const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+        const filename = `${crypto.randomUUID()}.${ext}`;
+        await fs.promises.writeFile(path.join(GEAR_UPLOADS_DIR, filename), Buffer.from(match[2], 'base64'));
+        res.status(201).json({ url: `/uploads/gear/${filename}` });
+    } catch (err) {
+        console.error('[POST /api/admin/gear/upload-image]', err);
+        res.status(500).json({ error: 'Failed to upload image' });
     }
 });
 
