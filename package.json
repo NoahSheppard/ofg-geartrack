@@ -7,7 +7,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "idp": "node ofg-geartrack-idp/index.js",
-    "sp": "node src/index.js"
+    "sp": "node src/index.js",
+    "seed": "node scripts/seed.js",
+    "dev": "bash scripts/dev.sh",
+    "prod": "bash scripts/prod.sh"
   },
   "repository": {
     "type": "git",

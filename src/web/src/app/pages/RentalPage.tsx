@@ -1,32 +1,108 @@
-import { useState } from "react";
-import { MOCK_GEAR } from "../data";
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 import { Clock, Package, X, Search } from "lucide-react";
+import type { Gear } from "../types";
 
 const CATEGORY_COLORS: Record<string, string> = {
-  Camera: "text-violet-600 bg-violet-50",
-  Lens: "text-blue-600 bg-blue-50",
-  Support: "text-teal-600 bg-teal-50",
+  Cameras: "text-violet-600 bg-violet-50",
+  Lenses: "text-blue-600 bg-blue-50",
+  "Support & Grip": "text-teal-600 bg-teal-50",
   Lighting: "text-yellow-700 bg-yellow-50",
   Audio: "text-rose-600 bg-rose-50",
 };
 
+type RentalFormValues = {
+  quantity: number;
+  rentalStart: string;
+  returnDue: string;
+  purpose: string;
+};
+
+function todayISO() {
+  return new Date().toISOString().split("T")[0];
+}
+
+function tomorrowISO() {
+  return new Date(Date.now() + 86_400_000).toISOString().split("T")[0];
+}
+
 export function RentalPage() {
-  const [selectedGearId, setSelectedGearId] = useState<string | null>(null);
-  const [rentDuration, setRentDuration] = useState(1);
+  const [gear, setGear] = useState<Gear[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedGearId, setSelectedGearId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const filteredGear = MOCK_GEAR.filter(
+  const {
+    register,
+    handleSubmit,
+    reset,
+    watch,
+    formState: { errors, isSubmitting },
+  } = useForm<RentalFormValues>({
+    defaultValues: { quantity: 1, rentalStart: todayISO(), returnDue: tomorrowISO(), purpose: "" },
+  });
+
+  const rentalStart = watch("rentalStart");
+
+  useEffect(() => {
+    fetch("/api/gear", { credentials: "include" })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(setGear)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const filteredGear = gear.filter(
     (g) =>
       g.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      g.category.toLowerCase().includes(searchQuery.toLowerCase())
+      (g.category ?? "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleRent = (e: React.FormEvent, gearId: string) => {
-    e.preventDefault();
-    alert(`Rental request submitted for ${rentDuration} day${rentDuration !== 1 ? "s" : ""}!`);
-    setSelectedGearId(null);
-    setRentDuration(1);
+  const openRequestForm = (item: Gear) => {
+    setSelectedGearId(item.id);
+    reset({ quantity: 1, rentalStart: todayISO(), returnDue: tomorrowISO(), purpose: "" });
   };
+
+  const onSubmit = async (item: Gear, values: RentalFormValues) => {
+    try {
+      const res = await fetch("/api/rentals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          gearId: item.id,
+          quantity: Number(values.quantity),
+          rentalStart: values.rentalStart,
+          returnDue: values.returnDue,
+          purpose: values.purpose || undefined,
+        }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        toast.error(body.error ?? "Failed to submit request");
+        return;
+      }
+
+      toast.success("Request submitted — pending approval");
+      setSelectedGearId(null);
+    } catch {
+      toast.error("Failed to submit request");
+    }
+  };
+
+  if (loading) {
+    return <div className="text-gray-400 text-sm py-16 text-center">Loading gear catalogue…</div>;
+  }
+  if (error) {
+    return <div className="text-red-500 text-sm py-16 text-center">Could not load gear: {error}</div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -48,72 +124,120 @@ export function RentalPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        {filteredGear.map((gear) => {
-          const catClass = CATEGORY_COLORS[gear.category] ?? "text-gray-600 bg-gray-100";
-          const isSelected = selectedGearId === gear.id;
-          const outOfStock = gear.stock === 0;
+        {filteredGear.map((item) => {
+          const catClass = CATEGORY_COLORS[item.category ?? ""] ?? "text-gray-600 bg-gray-100";
+          const isSelected = selectedGearId === item.id;
+          const outOfStock = item.quantityAvailable === 0;
 
           return (
             <div
-              key={gear.id}
+              key={item.id}
               className="bg-white border border-gray-200 rounded-2xl overflow-hidden flex flex-col hover:shadow-md transition-shadow"
             >
               <div className="relative aspect-[16/9] overflow-hidden bg-gray-100">
-                <img
-                  src={gear.photo}
-                  alt={gear.name}
-                  className="w-full h-full object-cover"
-                  style={outOfStock ? { filter: "grayscale(50%)" } : undefined}
-                />
-                <span className={`absolute top-3 left-3 text-xs font-medium px-2 py-0.5 rounded-full ${catClass}`}>
-                  {gear.category}
-                </span>
+                {item.imageUrl ? (
+                  <img
+                    src={item.imageUrl}
+                    alt={item.name}
+                    className="w-full h-full object-cover"
+                    style={outOfStock ? { filter: "grayscale(50%)" } : undefined}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Package className="w-8 h-8 text-gray-300" />
+                  </div>
+                )}
+                {item.category && (
+                  <span className={`absolute top-3 left-3 text-xs font-medium px-2 py-0.5 rounded-full ${catClass}`}>
+                    {item.category}
+                  </span>
+                )}
               </div>
 
               <div className="p-5 flex-1 flex flex-col">
-                <h3 className="text-gray-900 mb-1">{gear.name}</h3>
-                <p className="text-sm text-gray-500 mb-4 flex-1 line-clamp-2">{gear.description}</p>
+                <h3 className="text-gray-900 mb-1">{item.name}</h3>
+                <p className="text-sm text-gray-500 mb-4 flex-1 line-clamp-2">{item.description}</p>
 
                 <div className="flex items-center gap-4 text-xs text-gray-400 mb-4 border-t border-gray-100 pt-3">
                   <span className="flex items-center gap-1">
-                    <Clock className="w-3.5 h-3.5" /> Max {gear.maxRentDays} days
+                    <Clock className="w-3.5 h-3.5" /> Condition: {item.condition}
                   </span>
                   <span className="flex items-center gap-1">
                     <Package className="w-3.5 h-3.5" />
-                    <span className={outOfStock ? "text-red-500" : gear.stock <= 2 ? "text-amber-600" : "text-green-600"}>
-                      {outOfStock ? "Out of stock" : `${gear.stock} available`}
+                    <span className={outOfStock ? "text-red-500" : item.quantityAvailable <= 1 ? "text-amber-600" : "text-green-600"}>
+                      {outOfStock ? "Out of stock" : `${item.quantityAvailable} of ${item.quantityTotal} available`}
                     </span>
                   </span>
                 </div>
 
                 {isSelected ? (
-                  <form onSubmit={(e) => handleRent(e, gear.id)} className="space-y-3">
-                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <label className="text-xs font-medium text-gray-600">Duration</label>
-                        <span className="text-sm font-semibold text-blue-600">
-                          {rentDuration} day{rentDuration !== 1 ? "s" : ""}
-                        </span>
+                  <form onSubmit={handleSubmit((values) => onSubmit(item, values))} className="space-y-3">
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-3">
+                      <div>
+                        <label className="text-xs font-medium text-gray-600">Quantity</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={item.quantityAvailable}
+                          className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                          {...register("quantity", {
+                            required: true,
+                            valueAsNumber: true,
+                            min: 1,
+                            max: item.quantityAvailable,
+                          })}
+                        />
+                        {errors.quantity && (
+                          <p className="text-xs text-red-500 mt-1">
+                            Enter a quantity between 1 and {item.quantityAvailable}.
+                          </p>
+                        )}
                       </div>
-                      <input
-                        type="range"
-                        min="1"
-                        max={gear.maxRentDays}
-                        value={rentDuration}
-                        onChange={(e) => setRentDuration(parseInt(e.target.value))}
-                        className="w-full accent-blue-600"
-                      />
-                      <div className="flex justify-between text-xs text-gray-400 mt-1">
-                        <span>1 day</span>
-                        <span>{gear.maxRentDays} days</span>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-xs font-medium text-gray-600">Pickup date</label>
+                          <input
+                            type="date"
+                            min={todayISO()}
+                            className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                            {...register("rentalStart", { required: true })}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-gray-600">Return by</label>
+                          <input
+                            type="date"
+                            min={rentalStart}
+                            className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                            {...register("returnDue", {
+                              required: true,
+                              validate: (v) => v > rentalStart || "Must be after the pickup date",
+                            })}
+                          />
+                          {errors.returnDue && (
+                            <p className="text-xs text-red-500 mt-1">{errors.returnDue.message}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-medium text-gray-600">Purpose (optional)</label>
+                        <textarea
+                          rows={2}
+                          placeholder="e.g. Filming a short documentary for Media Studies"
+                          className="mt-1 w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 resize-none"
+                          {...register("purpose")}
+                        />
                       </div>
                     </div>
                     <div className="flex gap-2">
                       <button
                         type="submit"
-                        className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                        disabled={isSubmitting}
+                        className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
                       >
-                        Confirm
+                        {isSubmitting ? "Submitting…" : "Submit Request"}
                       </button>
                       <button
                         type="button"
@@ -126,7 +250,7 @@ export function RentalPage() {
                   </form>
                 ) : (
                   <button
-                    onClick={() => { setSelectedGearId(gear.id); setRentDuration(1); }}
+                    onClick={() => openRequestForm(item)}
                     disabled={outOfStock}
                     className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors ${
                       outOfStock

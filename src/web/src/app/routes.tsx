@@ -3,8 +3,10 @@ import { Layout } from "./Layout";
 import { RentalPage } from "./pages/RentalPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { AdminPage } from "./pages/AdminPage";
+import { LoginPage } from "./pages/LoginPage";
 
 export const router = createBrowserRouter([
+  { path: "/login", Component: LoginPage },
   {
     path: "/",
     Component: Layout,
