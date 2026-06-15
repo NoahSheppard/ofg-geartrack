@@ -3,5 +3,6 @@ package-lock.json
 output/
 test/
 certificates/
-db/
-db/*
+db/idp.db
+
+‘~/
